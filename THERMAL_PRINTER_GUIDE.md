@@ -1,0 +1,109 @@
+# Thermal POS Printer App
+
+A Tauri-based application for printing receipts to thermal POS printers.
+
+## Features
+
+- **Thermal Printer Detection**: Automatically detects thermal printers connected to your system
+- **Printer Selection**: Dropdown menu to select from available thermal printers
+- **Sample Receipt Printing**: Print a sample market receipt with items, prices, and totals
+- **ESC/POS Commands**: Uses standard ESC/POS commands compatible with most thermal printers
+
+## Supported Thermal Printer Brands
+
+The app filters for common thermal printer brands including:
+- Epson (TM series)
+- Star Micronics
+- Bixolon
+- Zebra
+- Citizen
+- Rongta
+- XPrinter
+- Any printer with "thermal", "pos", or "receipt" in the name
+
+## How to Use
+
+1. **Connect Your Thermal Printer**: Ensure your thermal printer is properly installed and recognized by your operating system
+
+2. **Launch the App**: Run the application
+   ```bash
+   npm install
+   npm run tauri dev
+   ```
+
+3. **Select Printer**: Choose your thermal printer from the dropdown menu
+
+4. **Print Receipt**: Click the "Print Sample Receipt" button to print a test receipt
+
+5. **Refresh Printers**: If you connect a new printer, click the "Refresh" button to update the list
+
+## Sample Receipt Format
+
+The app prints a sample receipt with:
+- Store header (large text, centered)
+- Store address and contact information
+- Itemized list of products with quantities and prices
+- Subtotal, tax, and total
+- Thank you message
+- Automatic paper cut (if supported by printer)
+
+## Technical Details
+
+### ESC/POS Commands Used
+
+- **ESC @** (0x1B 0x40): Initialize printer
+- **ESC a** (0x1B 0x61): Text alignment (left, center, right)
+- **GS !** (0x1D 0x21): Text size (width and height)
+- **GS V** (0x1D 0x56): Paper cut
+
+### Platform-Specific Printing
+
+- **macOS/Linux**: Uses `lpr` command with raw option
+- **Windows**: Writes directly to printer device
+
+## Troubleshooting
+
+### No Printers Found
+- Ensure your thermal printer is properly installed in your system
+- Check that the printer name contains one of the supported keywords
+- Try clicking the "Refresh" button after connecting the printer
+
+### Print Command Fails
+- Verify the printer is online and has paper
+- Check printer permissions in your OS settings
+- Ensure the printer supports ESC/POS commands (most thermal printers do)
+
+### macOS Specific
+- You may need to add the printer through System Preferences > Printers & Scanners
+- Use the "Generic" or "Raw" printer driver for thermal printers
+
+### Windows Specific
+- Ensure the printer is shared or accessible
+- Check that raw printing is enabled for the printer
+
+## Development
+
+### Dependencies
+
+**Rust:**
+- `printers`: For enumerating system printers
+- `tauri`: Desktop application framework
+- `serde`: Serialization/deserialization
+
+**Frontend:**
+- React
+- TypeScript
+- Vite
+
+### Building for Production
+
+```bash
+npm run tauri build
+```
+
+This will create a platform-specific executable in `src-tauri/target/release`.
+
+## License
+
+MIT
+
