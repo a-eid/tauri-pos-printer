@@ -126,12 +126,12 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Foundation::{HANDLE, BOOL};
+        use windows::Win32::Foundation::HANDLE;
         use windows::Win32::Graphics::Printing::{
             OpenPrinterW, StartDocPrinterW, StartPagePrinter, WritePrinter,
             EndPagePrinter, EndDocPrinter, ClosePrinter, DOC_INFO_1W,
         };
-        use windows::core::PCWSTR;
+        use windows::core::PWSTR;
         use std::ptr;
         
         unsafe {
@@ -140,36 +140,36 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
             
             // Open the printer
             let result = OpenPrinterW(
-                PCWSTR(printer_name_wide.as_ptr()),
+                PWSTR(printer_name_wide.as_ptr() as *mut u16),
                 &mut h_printer,
                 None,
             );
             
-            if result.is_err() {
+            if !result.as_bool() {
                 return Err(format!("Failed to open printer '{}'. Make sure the printer is installed and accessible.", printer_name));
             }
             
             // Set up document info
-            let doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
-            let datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
+            let mut doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
+            let mut datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
             
             let mut doc_info = DOC_INFO_1W {
-                pDocName: PCWSTR(doc_name.as_ptr()),
-                pOutputFile: PCWSTR(ptr::null()),
-                pDatatype: PCWSTR(datatype.as_ptr()),
+                pDocName: PWSTR(doc_name.as_mut_ptr()),
+                pOutputFile: PWSTR(ptr::null_mut()),
+                pDatatype: PWSTR(datatype.as_mut_ptr()),
             };
             
             // Start document
-            let job_id = StartDocPrinterW(h_printer, 1, &mut doc_info as *mut _ as *mut u8);
+            let job_id = StartDocPrinterW(h_printer, 1, &doc_info);
             if job_id == 0 {
-                ClosePrinter(h_printer);
+                let _ = ClosePrinter(h_printer);
                 return Err("Failed to start print job".to_string());
             }
             
             // Start page
-            if StartPagePrinter(h_printer).is_err() {
-                EndDocPrinter(h_printer);
-                ClosePrinter(h_printer);
+            if !StartPagePrinter(h_printer).as_bool() {
+                let _ = EndDocPrinter(h_printer);
+                let _ = ClosePrinter(h_printer);
                 return Err("Failed to start page".to_string());
             }
             
@@ -182,10 +182,10 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
                 &mut bytes_written,
             );
             
-            if result.is_err() {
-                EndPagePrinter(h_printer);
-                EndDocPrinter(h_printer);
-                ClosePrinter(h_printer);
+            if !result.as_bool() {
+                let _ = EndPagePrinter(h_printer);
+                let _ = EndDocPrinter(h_printer);
+                let _ = ClosePrinter(h_printer);
                 return Err("Failed to write to printer".to_string());
             }
             
