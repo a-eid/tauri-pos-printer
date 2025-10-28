@@ -1,6 +1,6 @@
 use printers::get_printers;
 use serde::{Deserialize, Serialize};
-use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache, fontdb};
 use image::{GrayImage, Luma};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
@@ -82,7 +82,7 @@ fn render_text_to_bitmap(text: &str, width_px: u32, font_size: f32) -> (Vec<u8>,
     // Create buffer with metrics
     let metrics = Metrics::new(font_size, font_size * 1.2);
     let mut buffer = Buffer::new(&mut font_system, metrics);
-    buffer.set_size(&mut font_system, width_px as f32, f32::INFINITY);
+    buffer.set_size(&mut font_system, Some(width_px as f32), Some(f32::INFINITY));
     
     // Set text with RTL support
     let attrs = Attrs::new();
@@ -304,7 +304,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
             let mut doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
             let mut datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
             
-            let mut doc_info = DOC_INFO_1W {
+            let doc_info = DOC_INFO_1W {
                 pDocName: PWSTR(doc_name.as_mut_ptr()),
                 pOutputFile: PWSTR(ptr::null_mut()),
                 pDatatype: PWSTR(datatype.as_mut_ptr()),
