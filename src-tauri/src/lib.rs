@@ -53,19 +53,14 @@ fn encode_utf8(text: &str) -> Vec<u8> {
 
 #[tauri::command]
 fn print_receipt(printer_name: String) -> Result<String, String> {
-    // Generate ESC/POS commands for Arabic receipt
+    // Simplified approach: Send plain UTF-8 text with minimal formatting
+    // No code page commands, no encoding conversion - just raw UTF-8 bytes
     let mut commands = Vec::new();
     
-    // ESC @ - Initialize printer
+    // ESC @ - Initialize printer only
     commands.extend_from_slice(&[0x1B, 0x40]);
     
-    // Try UTF-8 code page (65) - Some modern thermal printers support this
-    commands.extend_from_slice(&[0x1B, 0x74, 0x41]); // 65 = 0x41 for UTF-8
-    
-    // If UTF-8 doesn't work, the printer might need:
-    // - Code page 17 (0x11) for CP864
-    // - Code page 28 (0x1C) for Windows-1256  
-    // - Code page 16 (0x10) for CP1256
+    // NO code page command - use printer's default
     
     // ESC a 1 - Center alignment
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
@@ -198,7 +193,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
                 return Err(format!("Failed to open printer '{}'. Make sure the printer is installed and accessible.", printer_name));
             }
             
-            // Set up document info
+            // Set up document info - Use RAW mode for ESC/POS commands
             let mut doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
             let mut datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
             
