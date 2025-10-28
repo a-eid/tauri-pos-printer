@@ -100,7 +100,12 @@ fn render_text_to_bitmap(text: &str, width_px: u32, font_size: f32) -> (Vec<u8>,
     let height = max_height + 10; // Add padding
     let mut img = GrayImage::new(width_px, height);
     
-    // Draw text
+    // Initialize to WHITE background (255 = white)
+    for pixel in img.pixels_mut() {
+        *pixel = Luma([255]);
+    }
+    
+    // Draw text (BLACK on WHITE)
     for run in buffer.layout_runs() {
         for glyph in run.glyphs.iter() {
             let physical_glyph = glyph.physical((0.0, 0.0), 1.0);
@@ -122,6 +127,7 @@ fn render_text_to_bitmap(text: &str, width_px: u32, font_size: f32) -> (Vec<u8>,
                     let px = x + gx;
                     let py = y + gy;
                     if px >= 0 && px < width_px as i32 && py >= 0 && py < height as i32 {
+                        // Draw black text: pixel value is opacity, invert to get darkness
                         img.put_pixel(px as u32, py as u32, Luma([255 - pixel]));
                     }
                 }
@@ -141,8 +147,8 @@ fn to_1bpp_packed(width: u32, height: u32, gray: &[u8]) -> Vec<u8> {
     for y in 0..height {
         for x in 0..width {
             let gray_val = gray[(y * width + x) as usize];
-            // Threshold: > 128 = white (0), <= 128 = black (1)
-            if gray_val <= 128 {
+            // Threshold: darker pixels (< 128) = print black (1), light pixels (>= 128) = don't print (0)
+            if gray_val < 128 {
                 let byte_idx = (y * bytes_per_row + x / 8) as usize;
                 let bit_idx = 7 - (x % 8);
                 packed[byte_idx] |= 1 << bit_idx;
@@ -153,93 +159,190 @@ fn to_1bpp_packed(width: u32, height: u32, gray: &[u8]) -> Vec<u8> {
     packed
 }
 
+// Test function: print a simple black square
+#[tauri::command]
+fn test_bitmap_square(printer_name: String) -> Result<String, String> {
+    let mut commands = Vec::new();
+    
+    // Init
+    commands.extend_from_slice(&[0x1B, 0x40]);
+    
+    // Create a 100x100 black square
+    let width = 100u32;
+    let height = 100u32;
+    let width_bytes = (width + 7) / 8;
+    
+    // All bits set to 1 = all black
+    let bitmap = vec![0xFFu8; (width_bytes * height) as usize];
+    
+    commands.extend(escpos_raster_command(width, height, &bitmap));
+    
+    commands.extend_from_slice(&[0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x00]);
+    
+    // Send to printer (Windows only for now)
+    #[cfg(target_os = "windows")]
+    {
+        use std::ptr;
+        use windows::Win32::Graphics::Printing::*;
+        use windows::Win32::Foundation::*;
+        use windows::core::*;
+        
+        unsafe {
+            let mut printer_name_wide: Vec<u16> = printer_name.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut h_printer = Default::default();
+            
+            let result = OpenPrinterW(
+                PWSTR(printer_name_wide.as_mut_ptr()),
+                &mut h_printer,
+                None,
+            );
+            
+            if result.is_err() {
+                return Err("Failed to open printer".to_string());
+            }
+            
+            let mut doc_name: Vec<u16> = "Test\0".encode_utf16().collect();
+            let mut datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
+            
+            let doc_info = DOC_INFO_1W {
+                pDocName: PWSTR(doc_name.as_mut_ptr()),
+                pOutputFile: PWSTR(ptr::null_mut()),
+                pDatatype: PWSTR(datatype.as_mut_ptr()),
+            };
+            
+            StartDocPrinterW(h_printer, 1, &doc_info);
+            StartPagePrinter(h_printer);
+            
+            let mut bytes_written = 0u32;
+            WritePrinter(
+                h_printer,
+                commands.as_ptr() as *const _,
+                commands.len() as u32,
+                &mut bytes_written,
+            );
+            
+            EndPagePrinter(h_printer);
+            EndDocPrinter(h_printer);
+            let _ = ClosePrinter(h_printer);
+        }
+    }
+    
+    Ok(format!("Test square printed! If you see a black square, raster works!"))
+}
+
 #[tauri::command]
 fn print_receipt(printer_name: String) -> Result<String, String> {
-    // Bitmap-based Arabic printing - renders text as images with proper RTL & shaping
+    // SIMPLIFIED: Mix text and bitmap rendering to minimize paper waste
     let mut commands = Vec::new();
-    let width_px = 576; // 80mm printer ~72dpi
+    let width_px = 384; // 58mm printer width - smaller to be safe!
     
     // ESC @ - Initialize printer
     commands.extend_from_slice(&[0x1B, 0x40]);
     
-    // Store name (large font, centered)
-    let (gray, w, h) = render_text_to_bitmap("متجر عينة", width_px, 36.0);
-    let bitmap = to_1bpp_packed(w, h, &gray);
-    commands.extend(escpos_raster_command(w, h, &bitmap));
-    commands.push(0x0A); // Line feed
+    // Center alignment for header
+    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
     
-    // Address lines (normal font)
-    for line in ["123 شارع الرئيسي", "المدينة، المحافظة 12345", "هاتف: (555) 123-4567"] {
-        let (gray, w, h) = render_text_to_bitmap(line, width_px, 24.0);
-        let bitmap = to_1bpp_packed(w, h, &gray);
-        commands.extend(escpos_raster_command(w, h, &bitmap));
-        commands.push(0x0A);
+    // Store name - BITMAP (Arabic text)
+    let (gray, w, h) = render_text_to_bitmap("متجر عينة", width_px, 28.0);
+    if h > 100 { // Safety check!
+        return Err(format!("Bitmap too tall: {} pixels. Aborting to save paper!", h));
     }
-    
-    commands.push(0x0A); // Extra space
-    
-    // Divider (plain ASCII - no need for bitmap)
-    commands.extend_from_slice(b"================================\n");
-    
-    // Items header
-    let (gray, w, h) = render_text_to_bitmap("الصنف          الكمية    السعر", width_px, 24.0);
     let bitmap = to_1bpp_packed(w, h, &gray);
     commands.extend(escpos_raster_command(w, h, &bitmap));
     commands.push(0x0A);
     
-    commands.extend_from_slice(b"================================\n");
-    
-    // Items with prices
-    let items = vec![
-        "تفاح                2x    2.50 ج.م",
-        "موز                 3x    1.50 ج.م",
-        "برتقال              1x    3.00 ج.م",
-    ];
-    
-    for item in items {
-        let (gray, w, h) = render_text_to_bitmap(item, width_px, 24.0);
-        let bitmap = to_1bpp_packed(w, h, &gray);
-        commands.extend(escpos_raster_command(w, h, &bitmap));
-        commands.push(0x0A);
-    }
-    
-    commands.extend_from_slice(b"================================\n");
-    
-    // Totals
-    let totals = vec![
-        "المجموع الفرعي:        7.00 ج.م",
-        "الضريبة (10٪):         0.70 ج.م",
-    ];
-    
-    for total in totals {
-        let (gray, w, h) = render_text_to_bitmap(total, width_px, 24.0);
-        let bitmap = to_1bpp_packed(w, h, &gray);
-        commands.extend(escpos_raster_command(w, h, &bitmap));
-        commands.push(0x0A);
-    }
-    
-    // Grand total (larger font to emphasize)
-    let (gray, w, h) = render_text_to_bitmap("الإجمالي:             7.70 ج.م", width_px, 32.0);
+    // Address - BITMAP (contains Arabic)
+    let (gray, w, h) = render_text_to_bitmap("123 شارع الرئيسي", width_px, 20.0);
+    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
     let bitmap = to_1bpp_packed(w, h, &gray);
     commands.extend(escpos_raster_command(w, h, &bitmap));
     commands.push(0x0A);
+    
+    // Phone - ASCII only
+    commands.extend_from_slice(b"Tel: (555) 123-4567\n\n");
+    
+    // Divider - ASCII
+    commands.extend_from_slice(b"--------------------------------\n");
+    
+    // Items header - BITMAP (Arabic)
+    let (gray, w, h) = render_text_to_bitmap("الصنف", width_px, 20.0);
+    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
+    let bitmap = to_1bpp_packed(w, h, &gray);
+    commands.extend(escpos_raster_command(w, h, &bitmap));
     commands.push(0x0A);
     
-    // Footer
-    let footer = vec![
-        "شكراً لك على الشراء!",
-        "نتمنى رؤيتك مرة أخرى",
-    ];
+    commands.extend_from_slice(b"--------------------------------\n");
     
-    for line in footer {
-        let (gray, w, h) = render_text_to_bitmap(line, width_px, 24.0);
-        let bitmap = to_1bpp_packed(w, h, &gray);
-        commands.extend(escpos_raster_command(w, h, &bitmap));
-        commands.push(0x0A);
-    }
+    // Right align for items
+    commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
     
-    // Padding before cut
-    commands.extend_from_slice(&[0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A]);
+    // Item 1: Apple - BITMAP (Arabic name only)
+    let (gray, w, h) = render_text_to_bitmap("تفاح", width_px, 20.0);
+    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
+    let bitmap = to_1bpp_packed(w, h, &gray);
+    commands.extend(escpos_raster_command(w, h, &bitmap));
+    commands.push(0x0A);
+    // Price in ASCII (center aligned)
+    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
+    commands.extend_from_slice(b"2x       2.50 EGP\n");
+    
+    // Item 2: Banana
+    commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
+    let (gray, w, h) = render_text_to_bitmap("موز", width_px, 20.0);
+    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
+    let bitmap = to_1bpp_packed(w, h, &gray);
+    commands.extend(escpos_raster_command(w, h, &bitmap));
+    commands.push(0x0A);
+    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
+    commands.extend_from_slice(b"3x       1.50 EGP\n");
+    
+    // Item 3: Orange
+    commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
+    let (gray, w, h) = render_text_to_bitmap("برتقال", width_px, 20.0);
+    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
+    let bitmap = to_1bpp_packed(w, h, &gray);
+    commands.extend(escpos_raster_command(w, h, &bitmap));
+    commands.push(0x0A);
+    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
+    commands.extend_from_slice(b"1x       3.00 EGP\n");
+    
+    commands.extend_from_slice(b"--------------------------------\n");
+    
+    // Totals - BITMAP for Arabic labels
+    commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
+    let (gray, w, h) = render_text_to_bitmap("المجموع:", width_px, 20.0);
+    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
+    let bitmap = to_1bpp_packed(w, h, &gray);
+    commands.extend(escpos_raster_command(w, h, &bitmap));
+    commands.extend_from_slice(b"  7.00 EGP\n");
+    
+    let (gray, w, h) = render_text_to_bitmap("الضريبة:", width_px, 20.0);
+    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
+    let bitmap = to_1bpp_packed(w, h, &gray);
+    commands.extend(escpos_raster_command(w, h, &bitmap));
+    commands.extend_from_slice(b"  0.70 EGP\n");
+    
+    // Bold for total
+    commands.extend_from_slice(&[0x1B, 0x45, 0x01]);
+    let (gray, w, h) = render_text_to_bitmap("الإجمالي:", width_px, 24.0);
+    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
+    let bitmap = to_1bpp_packed(w, h, &gray);
+    commands.extend(escpos_raster_command(w, h, &bitmap));
+    commands.extend_from_slice(b"  7.70 EGP\n");
+    commands.extend_from_slice(&[0x1B, 0x45, 0x00]);
+    
+    commands.push(0x0A);
+    
+    // Footer - center aligned
+    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
+    let (gray, w, h) = render_text_to_bitmap("شكراً لزيارتكم", width_px, 20.0);
+    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
+    let bitmap = to_1bpp_packed(w, h, &gray);
+    commands.extend(escpos_raster_command(w, h, &bitmap));
+    commands.push(0x0A);
+    
+    // Minimal padding
+    commands.extend_from_slice(&[0x0A, 0x0A, 0x0A]);
     
     // Paper cut
     commands.extend_from_slice(&[0x1D, 0x56, 0x00]);
@@ -385,7 +488,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt])
+        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt, test_bitmap_square])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
