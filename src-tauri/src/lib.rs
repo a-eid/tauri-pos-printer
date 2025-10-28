@@ -41,8 +41,14 @@ fn get_thermal_printers() -> Result<Vec<PrinterInfo>, String> {
 
 // Helper function to encode UTF-8 text to Windows-1256 for thermal printers
 fn encode_arabic(text: &str) -> Vec<u8> {
+    // Try Windows-1256 encoding
     let (encoded, _, _) = WINDOWS_1256.encode(text);
     encoded.to_vec()
+}
+
+// Alternative: Just use UTF-8 bytes directly (some modern printers support this)
+fn encode_utf8(text: &str) -> Vec<u8> {
+    text.as_bytes().to_vec()
 }
 
 #[tauri::command]
@@ -53,8 +59,13 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     // ESC @ - Initialize printer
     commands.extend_from_slice(&[0x1B, 0x40]);
     
-    // Set code page to Windows-1256 (Arabic) - ESC t 28
-    commands.extend_from_slice(&[0x1B, 0x74, 0x1C]); // 28 = 0x1C
+    // Try UTF-8 code page (65) - Some modern thermal printers support this
+    commands.extend_from_slice(&[0x1B, 0x74, 0x41]); // 65 = 0x41 for UTF-8
+    
+    // If UTF-8 doesn't work, the printer might need:
+    // - Code page 17 (0x11) for CP864
+    // - Code page 28 (0x1C) for Windows-1256  
+    // - Code page 16 (0x10) for CP1256
     
     // ESC a 1 - Center alignment
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
@@ -63,14 +74,14 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     commands.extend_from_slice(&[0x1D, 0x21, 0x11]);
     
     // Store name in Arabic
-    commands.extend(encode_arabic("متجر عينة\n"));
+    commands.extend(encode_utf8("متجر عينة\n"));
     
     // GS ! 0x00 - Normal size
     commands.extend_from_slice(&[0x1D, 0x21, 0x00]);
     
-    commands.extend(encode_arabic("123 شارع الرئيسي\n"));
-    commands.extend(encode_arabic("المدينة، المحافظة 12345\n"));
-    commands.extend(encode_arabic("هاتف: (555) 123-4567\n"));
+    commands.extend(encode_utf8("123 شارع الرئيسي\n"));
+    commands.extend(encode_utf8("المدينة، المحافظة 12345\n"));
+    commands.extend(encode_utf8("هاتف: (555) 123-4567\n"));
     
     // Line feed
     commands.push(0x0A);
@@ -80,37 +91,37 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     commands.extend_from_slice(b"================================\n");
     
     // Items header - center aligned
-    commands.extend(encode_arabic("الصنف          الكمية    السعر\n"));
+    commands.extend(encode_utf8("الصنف          الكمية    السعر\n"));
     commands.extend_from_slice(b"================================\n");
     
     // Items - Right aligned for Arabic text
     commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
-    commands.extend(encode_arabic("تفاح\n"));
+    commands.extend(encode_utf8("تفاح\n"));
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
-    commands.extend(encode_arabic("2.50 ج.م         2x\n"));
+    commands.extend(encode_utf8("2.50 ج.م         2x\n"));
     
     commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
-    commands.extend(encode_arabic("موز\n"));
+    commands.extend(encode_utf8("موز\n"));
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
-    commands.extend(encode_arabic("1.50 ج.م         3x\n"));
+    commands.extend(encode_utf8("1.50 ج.م         3x\n"));
     
     commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
-    commands.extend(encode_arabic("برتقال\n"));
+    commands.extend(encode_utf8("برتقال\n"));
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
-    commands.extend(encode_arabic("3.00 ج.م         1x\n"));
+    commands.extend(encode_utf8("3.00 ج.م         1x\n"));
     
     // Divider - center aligned
     commands.extend_from_slice(b"================================\n");
     
     // Totals - Right aligned
     commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
-    commands.extend(encode_arabic("المجموع الفرعي:        7.00 ج.م\n"));
-    commands.extend(encode_arabic("الضريبة (10٪):         0.70 ج.م\n"));
+    commands.extend(encode_utf8("المجموع الفرعي:        7.00 ج.م\n"));
+    commands.extend(encode_utf8("الضريبة (10٪):         0.70 ج.م\n"));
     
     // Bold for total
     commands.extend_from_slice(&[0x1B, 0x45, 0x01]); // ESC E 1 - Bold on
     commands.extend_from_slice(&[0x1D, 0x21, 0x11]); // Double size
-    commands.extend(encode_arabic("الإجمالي:             7.70 ج.م\n"));
+    commands.extend(encode_utf8("الإجمالي:             7.70 ج.م\n"));
     commands.extend_from_slice(&[0x1D, 0x21, 0x00]); // Normal size
     commands.extend_from_slice(&[0x1B, 0x45, 0x00]); // ESC E 0 - Bold off
     
@@ -121,9 +132,9 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
     
     commands.extend_from_slice(&[0x1B, 0x45, 0x01]); // Bold on
-    commands.extend(encode_arabic("شكراً لك على الشراء!\n"));
+    commands.extend(encode_utf8("شكراً لك على الشراء!\n"));
     commands.extend_from_slice(&[0x1B, 0x45, 0x00]); // Bold off
-    commands.extend(encode_arabic("نتمنى رؤيتك مرة أخرى\n"));
+    commands.extend(encode_utf8("نتمنى رؤيتك مرة أخرى\n"));
     
     // Line feeds - add extra padding before cut (approximately 1.5cm)
     commands.extend_from_slice(&[0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A]);
