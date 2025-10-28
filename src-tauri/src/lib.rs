@@ -87,27 +87,54 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     // Center align
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
     
-    // Test receipt in English first
+    // Receipt with both English and Arabic (to test if Arabic works)
     commands.extend_from_slice(b"\n");
-    commands.extend_from_slice(b"     SAMPLE STORE\n");
-    commands.extend_from_slice(b"   123 Main Street\n");
+    
+    // Store name - English + Arabic
+    commands.extend_from_slice("     SAMPLE STORE\n".as_bytes());
+    commands.extend_from_slice("        متجر عينة\n\n".as_bytes());
+    
+    commands.extend_from_slice("   123 Main Street\n".as_bytes());
+    commands.extend_from_slice("    123 شارع الرئيسي\n".as_bytes());
+    
     commands.extend_from_slice(b"================================\n");
-    commands.extend_from_slice(b"       ITEMS\n");
+    
+    // Items header
+    commands.extend_from_slice("       ITEMS / الأصناف\n".as_bytes());
+    commands.extend_from_slice(b"================================\n\n");
+    
+    // Items with Arabic names
+    commands.extend_from_slice("Apple / تفاح\n".as_bytes());
+    commands.extend_from_slice(b"  2x @ 2.50 EGP = 5.00 EGP\n\n");
+    
+    commands.extend_from_slice("Banana / موز\n".as_bytes());
+    commands.extend_from_slice(b"  3x @ 1.50 EGP = 4.50 EGP\n\n");
+    
+    commands.extend_from_slice("Orange / برتقال\n".as_bytes());
+    commands.extend_from_slice(b"  1x @ 3.00 EGP = 3.00 EGP\n\n");
+    
     commands.extend_from_slice(b"================================\n");
-    commands.extend_from_slice(b"\n");
-    commands.extend_from_slice(b"Apple     2x   2.50   =  5.00\n");
-    commands.extend_from_slice(b"Banana    3x   1.50   =  4.50\n");
-    commands.extend_from_slice(b"Orange    1x   3.00   =  3.00\n");
-    commands.extend_from_slice(b"\n");
+    
+    // Totals
+    commands.extend_from_slice("Subtotal / المجموع الفرعي\n".as_bytes());
+    commands.extend_from_slice(b"                     7.00 EGP\n");
+    
+    commands.extend_from_slice("Tax (10%) / الضريبة\n".as_bytes());
+    commands.extend_from_slice(b"                     0.70 EGP\n");
+    
     commands.extend_from_slice(b"================================\n");
-    commands.extend_from_slice(b"Subtotal:            7.00 EGP\n");
-    commands.extend_from_slice(b"Tax (10%):           0.70 EGP\n");
-    commands.extend_from_slice(b"================================\n");
-    commands.extend_from_slice(b"TOTAL:               7.70 EGP\n");
-    commands.extend_from_slice(b"================================\n");
-    commands.extend_from_slice(b"\n");
-    commands.extend_from_slice(b"   Thank you!\n");
-    commands.extend_from_slice(b"\n\n\n\n");
+    
+    commands.extend_from_slice("TOTAL / الإجمالي\n".as_bytes());
+    commands.extend_from_slice(b"                     7.70 EGP\n");
+    
+    commands.extend_from_slice(b"================================\n\n");
+    
+    // Footer
+    commands.extend_from_slice("   Thank you!\n".as_bytes());
+    commands.extend_from_slice("    شكراً لك!\n".as_bytes());
+    
+    // INCREASED bottom padding (from 4 to 8 line feeds)
+    commands.extend_from_slice(b"\n\n\n\n\n\n\n\n");
     
     // Paper cut
     commands.extend_from_slice(&[0x1D, 0x56, 0x00]);
@@ -170,7 +197,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
         }
     }
     
-    Ok("Test receipt printed! If this works with English and cuts properly, we'll add Arabic next.".to_string())
+    Ok("Receipt printed! ✓ English ✓ Cut ✓ Padding | If Arabic is gibberish, we'll use HTML printing next.".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
