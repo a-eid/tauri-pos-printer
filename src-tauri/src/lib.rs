@@ -206,33 +206,49 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
 async fn print_receipt_html(app: tauri::AppHandle, printer_name: String) -> Result<String, String> {
     use tauri::Manager;
     
-    // Create a hidden webview window to render the HTML receipt
+    // Create a visible webview window to render the HTML receipt
+    // (visible for now so you can see if it loads)
     let webview = tauri::WebviewWindowBuilder::new(
         &app,
         "print-receipt",
         tauri::WebviewUrl::App("print-receipt.html".into())
     )
-    .title("Print Receipt")
+    .title("Receipt Preview - Click Print")
     .inner_size(400.0, 700.0)
-    .visible(false) // Hidden - user won't see it
+    .visible(true) // VISIBLE for debugging - you'll see the receipt
+    .center()
     .build()
-    .map_err(|e| format!("Failed to create print window: {}", e))?;
+    .map_err(|e| format!("Failed to create print window: {}. Make sure print-receipt.html is in the public folder.", e))?;
     
     // Wait for page to load completely
-    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
     
-    // Trigger print dialog with JavaScript
-    // This will use Windows GDI which handles Arabic perfectly!
-    webview.eval("window.print();")
-        .map_err(|e| format!("Failed to execute print: {}", e))?;
+    // Add a Print button via JavaScript instead of auto-printing
+    let print_script = r#"
+        (function() {
+            // Add a print button to the page
+            const btn = document.createElement('button');
+            btn.textContent = 'Print This Receipt';
+            btn.style.cssText = 'position: fixed; top: 10px; left: 50%; transform: translateX(-50%); padding: 15px 30px; font-size: 16px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; z-index: 9999; box-shadow: 0 4px 6px rgba(0,0,0,0.1);';
+            btn.onclick = function() {
+                window.print();
+            };
+            document.body.appendChild(btn);
+            
+            // Also auto-trigger print after a moment
+            setTimeout(() => {
+                window.print();
+            }, 500);
+        })();
+    "#;
     
-    // Wait for print dialog to appear and user to confirm
-    tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+    webview.eval(print_script)
+        .map_err(|e| format!("Failed to execute print script: {}", e))?;
     
-    // Close the hidden window
-    let _ = webview.close();
+    // Keep window open so user can print multiple times if needed
+    // They can close it manually
     
-    Ok("HTML receipt printed with Arabic support! 🎉".to_string())
+    Ok("Receipt window opened! You should see the Arabic receipt. Click the Print button or Ctrl+P to print.".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
