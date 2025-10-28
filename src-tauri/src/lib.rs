@@ -126,20 +126,74 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     
     #[cfg(target_os = "windows")]
     {
-        use std::fs::OpenOptions;
-        use std::io::Write as IoWrite;
+        use windows::Win32::Foundation::{HANDLE, BOOL};
+        use windows::Win32::Graphics::Printing::{
+            OpenPrinterW, StartDocPrinterW, StartPagePrinter, WritePrinter,
+            EndPagePrinter, EndDocPrinter, ClosePrinter, DOC_INFO_1W,
+        };
+        use windows::core::PCWSTR;
+        use std::ptr;
         
-        // On Windows, write directly to the printer share
-        let printer_path = format!("\\\\localhost\\{}", printer_name);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&printer_path)
-            .map_err(|e| format!("Failed to open printer: {}", e))?;
-        
-        file.write_all(&commands)
-            .map_err(|e| format!("Failed to write to printer: {}", e))?;
+        unsafe {
+            let printer_name_wide: Vec<u16> = printer_name.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut h_printer: HANDLE = HANDLE::default();
+            
+            // Open the printer
+            let result = OpenPrinterW(
+                PCWSTR(printer_name_wide.as_ptr()),
+                &mut h_printer,
+                None,
+            );
+            
+            if result.is_err() {
+                return Err(format!("Failed to open printer '{}'. Make sure the printer is installed and accessible.", printer_name));
+            }
+            
+            // Set up document info
+            let doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
+            let datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
+            
+            let mut doc_info = DOC_INFO_1W {
+                pDocName: PCWSTR(doc_name.as_ptr()),
+                pOutputFile: PCWSTR(ptr::null()),
+                pDatatype: PCWSTR(datatype.as_ptr()),
+            };
+            
+            // Start document
+            let job_id = StartDocPrinterW(h_printer, 1, &mut doc_info as *mut _ as *mut u8);
+            if job_id == 0 {
+                ClosePrinter(h_printer);
+                return Err("Failed to start print job".to_string());
+            }
+            
+            // Start page
+            if StartPagePrinter(h_printer).is_err() {
+                EndDocPrinter(h_printer);
+                ClosePrinter(h_printer);
+                return Err("Failed to start page".to_string());
+            }
+            
+            // Write data
+            let mut bytes_written: u32 = 0;
+            let result = WritePrinter(
+                h_printer,
+                commands.as_ptr() as *const _,
+                commands.len() as u32,
+                &mut bytes_written,
+            );
+            
+            if result.is_err() {
+                EndPagePrinter(h_printer);
+                EndDocPrinter(h_printer);
+                ClosePrinter(h_printer);
+                return Err("Failed to write to printer".to_string());
+            }
+            
+            // End page and document
+            let _ = EndPagePrinter(h_printer);
+            let _ = EndDocPrinter(h_printer);
+            let _ = ClosePrinter(h_printer);
+        }
     }
     
     #[cfg(target_os = "linux")]
