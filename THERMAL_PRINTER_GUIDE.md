@@ -62,10 +62,13 @@ The app prints a sample receipt in **Arabic** with:
 ### Arabic Support
 
 The app uses **Windows-1256** code page for proper Arabic text rendering. The receipt includes:
+- **Encoding conversion**: UTF-8 text is converted to Windows-1256 using the `encoding_rs` library
+- **Code page selection**: Sends `ESC t 28` to set the printer to Windows-1256
 - Right-to-left text alignment for Arabic content
-- Proper Arabic character encoding
 - Egyptian Pound (ج.م) currency symbol
 - Mixed alignment (center for headers, right for Arabic text)
+
+**Technical Note**: Thermal printers don't support UTF-8 natively. All Arabic text is converted from UTF-8 to Windows-1256 encoding before being sent to the printer.
 
 ### Platform-Specific Printing
 
@@ -100,6 +103,8 @@ The app uses **Windows-1256** code page for proper Arabic text rendering. The re
 - `printers`: For enumerating system printers
 - `tauri`: Desktop application framework
 - `serde`: Serialization/deserialization
+- `encoding_rs`: UTF-8 to Windows-1256 encoding conversion for Arabic text
+- `windows`: Windows API for direct printer access (Windows only)
 
 **Frontend:**
 - React

@@ -1,5 +1,6 @@
 use printers::get_printers;
 use serde::{Deserialize, Serialize};
+use encoding_rs::WINDOWS_1256;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PrinterInfo {
@@ -38,6 +39,12 @@ fn get_thermal_printers() -> Result<Vec<PrinterInfo>, String> {
     Ok(thermal_printers)
 }
 
+// Helper function to encode UTF-8 text to Windows-1256 for thermal printers
+fn encode_arabic(text: &str) -> Vec<u8> {
+    let (encoded, _, _) = WINDOWS_1256.encode(text);
+    encoded.to_vec()
+}
+
 #[tauri::command]
 fn print_receipt(printer_name: String) -> Result<String, String> {
     // Generate ESC/POS commands for Arabic receipt
@@ -56,54 +63,54 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     commands.extend_from_slice(&[0x1D, 0x21, 0x11]);
     
     // Store name in Arabic
-    commands.extend_from_slice("متجر عينة\n".as_bytes());
+    commands.extend(encode_arabic("متجر عينة\n"));
     
     // GS ! 0x00 - Normal size
     commands.extend_from_slice(&[0x1D, 0x21, 0x00]);
     
-    commands.extend_from_slice("123 شارع الرئيسي\n".as_bytes());
-    commands.extend_from_slice("المدينة، المحافظة 12345\n".as_bytes());
-    commands.extend_from_slice("هاتف: (555) 123-4567\n".as_bytes());
+    commands.extend(encode_arabic("123 شارع الرئيسي\n"));
+    commands.extend(encode_arabic("المدينة، المحافظة 12345\n"));
+    commands.extend(encode_arabic("هاتف: (555) 123-4567\n"));
     
     // Line feed
     commands.push(0x0A);
     
     // ESC a 1 - Center for divider
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
-    commands.extend_from_slice("================================\n".as_bytes());
+    commands.extend_from_slice(b"================================\n");
     
     // Items header - center aligned
-    commands.extend_from_slice("الصنف          الكمية    السعر\n".as_bytes());
-    commands.extend_from_slice("================================\n".as_bytes());
+    commands.extend(encode_arabic("الصنف          الكمية    السعر\n"));
+    commands.extend_from_slice(b"================================\n");
     
     // Items - Right aligned for Arabic text
     commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
-    commands.extend_from_slice("تفاح\n".as_bytes());
+    commands.extend(encode_arabic("تفاح\n"));
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
-    commands.extend_from_slice("2.50 ج.م         2x\n".as_bytes());
+    commands.extend(encode_arabic("2.50 ج.م         2x\n"));
     
     commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
-    commands.extend_from_slice("موز\n".as_bytes());
+    commands.extend(encode_arabic("موز\n"));
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
-    commands.extend_from_slice("1.50 ج.م         3x\n".as_bytes());
+    commands.extend(encode_arabic("1.50 ج.م         3x\n"));
     
     commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
-    commands.extend_from_slice("برتقال\n".as_bytes());
+    commands.extend(encode_arabic("برتقال\n"));
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
-    commands.extend_from_slice("3.00 ج.م         1x\n".as_bytes());
+    commands.extend(encode_arabic("3.00 ج.م         1x\n"));
     
     // Divider - center aligned
-    commands.extend_from_slice("================================\n".as_bytes());
+    commands.extend_from_slice(b"================================\n");
     
     // Totals - Right aligned
     commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
-    commands.extend_from_slice("المجموع الفرعي:        7.00 ج.م\n".as_bytes());
-    commands.extend_from_slice("الضريبة (10٪):         0.70 ج.م\n".as_bytes());
+    commands.extend(encode_arabic("المجموع الفرعي:        7.00 ج.م\n"));
+    commands.extend(encode_arabic("الضريبة (10٪):         0.70 ج.م\n"));
     
     // Bold for total
     commands.extend_from_slice(&[0x1B, 0x45, 0x01]); // ESC E 1 - Bold on
     commands.extend_from_slice(&[0x1D, 0x21, 0x11]); // Double size
-    commands.extend_from_slice("الإجمالي:             7.70 ج.م\n".as_bytes());
+    commands.extend(encode_arabic("الإجمالي:             7.70 ج.م\n"));
     commands.extend_from_slice(&[0x1D, 0x21, 0x00]); // Normal size
     commands.extend_from_slice(&[0x1B, 0x45, 0x00]); // ESC E 0 - Bold off
     
@@ -114,9 +121,9 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
     
     commands.extend_from_slice(&[0x1B, 0x45, 0x01]); // Bold on
-    commands.extend_from_slice("شكراً لك على الشراء!\n".as_bytes());
+    commands.extend(encode_arabic("شكراً لك على الشراء!\n"));
     commands.extend_from_slice(&[0x1B, 0x45, 0x00]); // Bold off
-    commands.extend_from_slice("نتمنى رؤيتك مرة أخرى\n".as_bytes());
+    commands.extend(encode_arabic("نتمنى رؤيتك مرة أخرى\n"));
     
     // Line feeds - add extra padding before cut (approximately 1.5cm)
     commands.extend_from_slice(&[0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A]);
@@ -258,7 +265,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
         }
     }
     
-    Ok("تم طباعة الإيصال بنجاح!".to_string())
+    Ok("Receipt printed successfully! / تم طباعة الإيصال بنجاح!".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
