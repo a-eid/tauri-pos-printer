@@ -145,7 +145,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
                 None,
             );
             
-            if !result.as_bool() {
+            if result.is_err() {
                 return Err(format!("Failed to open printer '{}'. Make sure the printer is installed and accessible.", printer_name));
             }
             
@@ -167,7 +167,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
             }
             
             // Start page
-            if !StartPagePrinter(h_printer).as_bool() {
+            if StartPagePrinter(h_printer).is_err() {
                 let _ = EndDocPrinter(h_printer);
                 let _ = ClosePrinter(h_printer);
                 return Err("Failed to start page".to_string());
@@ -182,7 +182,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
                 &mut bytes_written,
             );
             
-            if !result.as_bool() {
+            if result.is_err() {
                 let _ = EndPagePrinter(h_printer);
                 let _ = EndDocPrinter(h_printer);
                 let _ = ClosePrinter(h_printer);
