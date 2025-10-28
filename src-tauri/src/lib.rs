@@ -40,11 +40,14 @@ fn get_thermal_printers() -> Result<Vec<PrinterInfo>, String> {
 
 #[tauri::command]
 fn print_receipt(printer_name: String) -> Result<String, String> {
-    // Generate ESC/POS commands for a sample receipt
+    // Generate ESC/POS commands for Arabic receipt
     let mut commands = Vec::new();
     
     // ESC @ - Initialize printer
     commands.extend_from_slice(&[0x1B, 0x40]);
+    
+    // Set code page to Windows-1256 (Arabic) - ESC t 28
+    commands.extend_from_slice(&[0x1B, 0x74, 0x1C]); // 28 = 0x1C
     
     // ESC a 1 - Center alignment
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
@@ -52,40 +55,68 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     // GS ! 0x11 - Double height and width
     commands.extend_from_slice(&[0x1D, 0x21, 0x11]);
     
-    // Print store name
-    commands.extend_from_slice(b"SAMPLE STORE\n");
+    // Store name in Arabic
+    commands.extend_from_slice("متجر عينة\n".as_bytes());
     
     // GS ! 0x00 - Normal size
     commands.extend_from_slice(&[0x1D, 0x21, 0x00]);
     
-    commands.extend_from_slice(b"123 Main Street\n");
-    commands.extend_from_slice(b"City, State 12345\n");
-    commands.extend_from_slice(b"Tel: (555) 123-4567\n");
+    commands.extend_from_slice("123 شارع الرئيسي\n".as_bytes());
+    commands.extend_from_slice("المدينة، المحافظة 12345\n".as_bytes());
+    commands.extend_from_slice("هاتف: (555) 123-4567\n".as_bytes());
     
     // Line feed
     commands.push(0x0A);
     
-    // ESC a 0 - Left alignment
-    commands.extend_from_slice(&[0x1B, 0x61, 0x00]);
+    // ESC a 1 - Center for divider
+    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
+    commands.extend_from_slice("================================\n".as_bytes());
     
-    commands.extend_from_slice(b"================================\n");
-    commands.extend_from_slice(b"Item          Qty    Price\n");
-    commands.extend_from_slice(b"================================\n");
-    commands.extend_from_slice(b"Apple          2x    $2.50\n");
-    commands.extend_from_slice(b"Banana         3x    $1.50\n");
-    commands.extend_from_slice(b"Orange         1x    $3.00\n");
-    commands.extend_from_slice(b"================================\n");
-    commands.extend_from_slice(b"SUBTOTAL:              $7.00\n");
-    commands.extend_from_slice(b"TAX (10%):             $0.70\n");
-    commands.extend_from_slice(b"TOTAL:                 $7.70\n");
+    // Items header - center aligned
+    commands.extend_from_slice("الصنف          الكمية    السعر\n".as_bytes());
+    commands.extend_from_slice("================================\n".as_bytes());
+    
+    // Items - Right aligned for Arabic text
+    commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
+    commands.extend_from_slice("تفاح\n".as_bytes());
+    commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
+    commands.extend_from_slice("2.50 ج.م         2x\n".as_bytes());
+    
+    commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
+    commands.extend_from_slice("موز\n".as_bytes());
+    commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
+    commands.extend_from_slice("1.50 ج.م         3x\n".as_bytes());
+    
+    commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
+    commands.extend_from_slice("برتقال\n".as_bytes());
+    commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
+    commands.extend_from_slice("3.00 ج.م         1x\n".as_bytes());
+    
+    // Divider - center aligned
+    commands.extend_from_slice("================================\n".as_bytes());
+    
+    // Totals - Right aligned
+    commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
+    commands.extend_from_slice("المجموع الفرعي:        7.00 ج.م\n".as_bytes());
+    commands.extend_from_slice("الضريبة (10٪):         0.70 ج.م\n".as_bytes());
+    
+    // Bold for total
+    commands.extend_from_slice(&[0x1B, 0x45, 0x01]); // ESC E 1 - Bold on
+    commands.extend_from_slice(&[0x1D, 0x21, 0x11]); // Double size
+    commands.extend_from_slice("الإجمالي:             7.70 ج.م\n".as_bytes());
+    commands.extend_from_slice(&[0x1D, 0x21, 0x00]); // Normal size
+    commands.extend_from_slice(&[0x1B, 0x45, 0x00]); // ESC E 0 - Bold off
     
     // Line feed
     commands.push(0x0A);
     
-    // ESC a 1 - Center alignment
+    // ESC a 1 - Center alignment for footer
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
     
-    commands.extend_from_slice(b"Thank you for your purchase!\n");
+    commands.extend_from_slice(&[0x1B, 0x45, 0x01]); // Bold on
+    commands.extend_from_slice("شكراً لك على الشراء!\n".as_bytes());
+    commands.extend_from_slice(&[0x1B, 0x45, 0x00]); // Bold off
+    commands.extend_from_slice("نتمنى رؤيتك مرة أخرى\n".as_bytes());
     
     // Line feeds - add extra padding before cut (approximately 1.5cm)
     commands.extend_from_slice(&[0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A]);
@@ -227,7 +258,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
         }
     }
     
-    Ok("Receipt printed successfully!".to_string())
+    Ok("تم طباعة الإيصال بنجاح!".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

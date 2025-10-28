@@ -39,12 +39,13 @@ The app filters for common thermal printer brands including:
 
 ## Sample Receipt Format
 
-The app prints a sample receipt with:
-- Store header (large text, centered)
-- Store address and contact information
-- Itemized list of products with quantities and prices
-- Subtotal, tax, and total
-- Thank you message
+The app prints a sample receipt in **Arabic** with:
+- Store header (large text, centered) - "متجر عينة"
+- Store address and contact information in Arabic
+- Itemized list of products with quantities and prices (تفاح, موز, برتقال)
+- Subtotal (المجموع الفرعي), tax (الضريبة), and total (الإجمالي)
+- Thank you message in Arabic - "شكراً لك على الشراء!"
+- Egyptian Pound currency symbol (ج.م)
 - Automatic paper cut (if supported by printer)
 
 ## Technical Details
@@ -52,9 +53,19 @@ The app prints a sample receipt with:
 ### ESC/POS Commands Used
 
 - **ESC @** (0x1B 0x40): Initialize printer
-- **ESC a** (0x1B 0x61): Text alignment (left, center, right)
+- **ESC t** (0x1B 0x74): Set code page (28 = Windows-1256 for Arabic)
+- **ESC a** (0x1B 0x61): Text alignment (0=left, 1=center, 2=right)
+- **ESC E** (0x1B 0x45): Bold text (1=on, 0=off)
 - **GS !** (0x1D 0x21): Text size (width and height)
 - **GS V** (0x1D 0x56): Paper cut
+
+### Arabic Support
+
+The app uses **Windows-1256** code page for proper Arabic text rendering. The receipt includes:
+- Right-to-left text alignment for Arabic content
+- Proper Arabic character encoding
+- Egyptian Pound (ج.م) currency symbol
+- Mixed alignment (center for headers, right for Arabic text)
 
 ### Platform-Specific Printing
 

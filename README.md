@@ -66,27 +66,37 @@ The app automatically detects thermal printers from major brands:
 
 ## 🧾 Sample Receipt Format
 
-The app prints a professional receipt including:
+The app prints a professional receipt in **Arabic** including:
 
 ```
-         SAMPLE STORE
-        123 Main Street
-       City, State 12345
-      Tel: (555) 123-4567
+         متجر عينة
+    123 شارع الرئيسي
+  المدينة، المحافظة 12345
+  هاتف: (555) 123-4567
 
 ================================
-Item          Qty    Price
+الصنف          الكمية    السعر
 ================================
-Apple          2x    $2.50
-Banana         3x    $1.50
-Orange         1x    $3.00
+                          تفاح
+         2.50 ج.م    2x
+                           موز
+         1.50 ج.م    3x
+                        برتقال
+         3.00 ج.م    1x
 ================================
-SUBTOTAL:              $7.00
-TAX (10%):             $0.70
-TOTAL:                 $7.70
+المجموع الفرعي:        7.00 ج.م
+الضريبة (10٪):         0.70 ج.م
+الإجمالي:             7.70 ج.م
 
-   Thank you for your purchase!
+   شكراً لك على الشراء!
+   نتمنى رؤيتك مرة أخرى
 ```
+
+**Features:**
+- ✅ Arabic language support with Windows-1256 encoding
+- ✅ Right-to-left text alignment
+- ✅ Egyptian Pound (ج.م) currency
+- ✅ Bold formatting for important information
 
 ## 🛠️ Local Development (Optional)
 
