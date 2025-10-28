@@ -60,6 +60,26 @@ function App() {
 		}
 	}
 
+	const printReceiptHTML = async () => {
+		if (!selectedPrinter) {
+			setMessage("Please select a printer first");
+			return;
+		}
+
+		try {
+			setLoading(true);
+			setMessage("Opening print dialog...");
+			const result = await invoke<string>("print_receipt_html", {
+				printerName: selectedPrinter,
+			});
+			setMessage(result);
+		} catch (error) {
+			setMessage(`Error printing: ${error}`);
+		} finally {
+			setLoading(false);
+		}
+	}
+
 	return (
 		<main className="container">
 			<h1>Thermal POS Printer</h1>
@@ -95,14 +115,25 @@ function App() {
 					</div>
 				</div>
 
-			<button
-				type="button"
-				onClick={printReceipt}
-				disabled={loading || !selectedPrinter}
-				className="print-btn"
-			>
-				{loading ? "Printing..." : "🧾 Print Arabic Receipt"}
-			</button>
+			<div className="button-group">
+				<button
+					type="button"
+					onClick={printReceipt}
+					disabled={loading || !selectedPrinter}
+					className="print-btn secondary"
+				>
+					{loading ? "Printing..." : "📄 ESC/POS (English)"}
+				</button>
+				
+				<button
+					type="button"
+					onClick={printReceiptHTML}
+					disabled={loading || !selectedPrinter}
+					className="print-btn primary"
+				>
+					{loading ? "Printing..." : "🖨️ Print Arabic Receipt"}
+				</button>
+			</div>
 
 				{message && (
 					<div

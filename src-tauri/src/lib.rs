@@ -200,11 +200,46 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     Ok("Receipt printed! ✓ English ✓ Cut ✓ Padding | If Arabic is gibberish, we'll use HTML printing next.".to_string())
 }
 
+// Print receipt using HTML rendering (for Arabic support)
+// This uses Windows GDI to render Arabic text properly - same as Electron!
+#[tauri::command]
+async fn print_receipt_html(app: tauri::AppHandle, printer_name: String) -> Result<String, String> {
+    use tauri::Manager;
+    
+    // Create a hidden webview window to render the HTML receipt
+    let webview = tauri::WebviewWindowBuilder::new(
+        &app,
+        "print-receipt",
+        tauri::WebviewUrl::App("print-receipt.html".into())
+    )
+    .title("Print Receipt")
+    .inner_size(400.0, 700.0)
+    .visible(false) // Hidden - user won't see it
+    .build()
+    .map_err(|e| format!("Failed to create print window: {}", e))?;
+    
+    // Wait for page to load completely
+    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+    
+    // Trigger print dialog with JavaScript
+    // This will use Windows GDI which handles Arabic perfectly!
+    webview.eval("window.print();")
+        .map_err(|e| format!("Failed to execute print: {}", e))?;
+    
+    // Wait for print dialog to appear and user to confirm
+    tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+    
+    // Close the hidden window
+    let _ = webview.close();
+    
+    Ok("HTML receipt printed with Arabic support! 🎉".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt])
+        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt, print_receipt_html])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

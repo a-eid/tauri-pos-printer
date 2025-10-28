@@ -117,15 +117,38 @@ button:disabled {
   background-color: #d0d0d0;
 }
 
-.print-btn {
+.button-group {
+  display: flex;
+  gap: 1rem;
   width: 100%;
-  padding: 1em 2em;
-  font-size: 1.1em;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
 }
 
-.print-btn:hover:not(:disabled) {
+.print-btn {
+  flex: 1;
+  padding: 1em 1.5em;
+  font-size: 1em;
+}
+
+.print-btn.primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  font-size: 1.1em;
+  font-weight: 600;
+}
+
+.print-btn.primary:hover:not(:disabled) {
   background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(100, 108, 255, 0.4);
+}
+
+.print-btn.secondary {
+  background: linear-gradient(135deg, #888 0%, #666 100%);
+}
+
+.print-btn.secondary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #666 0%, #888 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
 }
 
 .message {
