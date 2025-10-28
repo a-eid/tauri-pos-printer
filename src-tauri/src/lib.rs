@@ -87,8 +87,8 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     
     commands.extend_from_slice(b"Thank you for your purchase!\n");
     
-    // Line feeds
-    commands.extend_from_slice(&[0x0A, 0x0A]);
+    // Line feeds - add extra padding before cut (approximately 1.5cm)
+    commands.extend_from_slice(&[0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A]);
     
     // GS V 0 - Full cut
     commands.extend_from_slice(&[0x1D, 0x56, 0x00]);
