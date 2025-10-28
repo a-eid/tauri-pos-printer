@@ -167,7 +167,8 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
             }
             
             // Start page
-            if StartPagePrinter(h_printer).is_err() {
+            let page_result = StartPagePrinter(h_printer);
+            if !page_result.as_bool() {
                 let _ = EndDocPrinter(h_printer);
                 let _ = ClosePrinter(h_printer);
                 return Err("Failed to start page".to_string());
@@ -175,14 +176,14 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
             
             // Write data
             let mut bytes_written: u32 = 0;
-            let result = WritePrinter(
+            let write_result = WritePrinter(
                 h_printer,
                 commands.as_ptr() as *const _,
                 commands.len() as u32,
                 &mut bytes_written,
             );
             
-            if result.is_err() {
+            if !write_result.as_bool() {
                 let _ = EndPagePrinter(h_printer);
                 let _ = EndDocPrinter(h_printer);
                 let _ = ClosePrinter(h_printer);
