@@ -95,39 +95,14 @@ function App() {
 					</div>
 				</div>
 
-			<div className="button-group">
-				<button
-					type="button"
-					onClick={async () => {
-						if (!selectedPrinter) return
-						setLoading(true)
-						setMessage("")
-						try {
-							const result = await invoke("test_bitmap_square", {
-								printerName: selectedPrinter,
-							})
-							setMessage(`✅ ${result}`)
-						} catch (error) {
-							setMessage(`❌ Error: ${error}`)
-						} finally {
-							setLoading(false)
-						}
-					}}
-					disabled={loading || !selectedPrinter}
-					className="test-btn"
-				>
-					{loading ? "Testing..." : "🔲 Test Square"}
-				</button>
-				
-				<button
-					type="button"
-					onClick={printReceipt}
-					disabled={loading || !selectedPrinter}
-					className="print-btn"
-				>
-					{loading ? "Printing..." : "🧾 Print Sample Receipt"}
-				</button>
-			</div>
+			<button
+				type="button"
+				onClick={printReceipt}
+				disabled={loading || !selectedPrinter}
+				className="print-btn"
+			>
+				{loading ? "Printing..." : "🧾 Print Arabic Receipt"}
+			</button>
 
 				{message && (
 					<div

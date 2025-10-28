@@ -1,9 +1,5 @@
 use printers::get_printers;
 use serde::{Deserialize, Serialize};
-use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache, fontdb};
-use image::{GrayImage, Luma};
-use once_cell::sync::Lazy;
-use std::sync::Mutex;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PrinterInfo {
@@ -42,348 +38,56 @@ fn get_thermal_printers() -> Result<Vec<PrinterInfo>, String> {
     Ok(thermal_printers)
 }
 
-// Global font system for text rendering with Arabic support
-static FONT_SYSTEM: Lazy<Mutex<FontSystem>> = Lazy::new(|| {
-    let mut db = fontdb::Database::new();
-    db.load_system_fonts(); // Load all Windows fonts including Arabic ones
-    Mutex::new(FontSystem::new_with_locale_and_db("ar".to_string(), db))
-});
-
-// Generate ESC/POS GS v 0 command for printing bitmap
-fn escpos_raster_command(width_px: u32, height_px: u32, bitmap: &[u8]) -> Vec<u8> {
-    let mut cmd = Vec::new();
+// Generate plain text receipt (let Windows printer driver handle rendering)
+fn generate_text_receipt() -> String {
+    let mut receipt = String::new();
     
-    // GS v 0 m xL xH yL yH [data]
-    cmd.push(0x1D); // GS
-    cmd.push(b'v');
-    cmd.push(0x30); // '0'
-    cmd.push(0x00); // m = 0 (normal mode)
+    // Store name (will be rendered by Windows with proper Arabic fonts)
+    receipt.push_str("        متجر عينة\n");
+    receipt.push_str("    123 شارع الرئيسي\n");
+    receipt.push_str("  المدينة، المحافظة 12345\n");
+    receipt.push_str("  هاتف: (555) 123-4567\n\n");
     
-    // Width in bytes
-    let width_bytes = (width_px + 7) / 8;
-    cmd.push((width_bytes & 0xFF) as u8); // xL
-    cmd.push(((width_bytes >> 8) & 0xFF) as u8); // xH
+    receipt.push_str("================================\n");
+    receipt.push_str("        الأصناف\n");
+    receipt.push_str("================================\n\n");
     
-    // Height in pixels
-    cmd.push((height_px & 0xFF) as u8); // yL
-    cmd.push(((height_px >> 8) & 0xFF) as u8); // yH
+    // Items - RTL will be handled by Windows
+    receipt.push_str("تفاح\n");
+    receipt.push_str("  2x @ 2.50 ج.م = 5.00 ج.م\n\n");
     
-    // Bitmap data
-    cmd.extend_from_slice(bitmap);
+    receipt.push_str("موز\n");
+    receipt.push_str("  3x @ 1.50 ج.م = 4.50 ج.م\n\n");
     
-    cmd
-}
-
-// Render Arabic text to grayscale bitmap
-fn render_text_to_bitmap(text: &str, width_px: u32, font_size: f32) -> (Vec<u8>, u32, u32) {
-    let mut font_system = FONT_SYSTEM.lock().unwrap();
-    let mut swash_cache = SwashCache::new();
+    receipt.push_str("برتقال\n");
+    receipt.push_str("  1x @ 3.00 ج.م = 3.00 ج.م\n\n");
     
-    // Create buffer with metrics
-    let metrics = Metrics::new(font_size, font_size * 1.2);
-    let mut buffer = Buffer::new(&mut font_system, metrics);
-    buffer.set_size(&mut font_system, Some(width_px as f32), Some(f32::INFINITY));
+    receipt.push_str("================================\n");
+    receipt.push_str("المجموع الفرعي:    7.00 ج.م\n");
+    receipt.push_str("الضريبة (10٪):     0.70 ج.م\n");
+    receipt.push_str("================================\n");
+    receipt.push_str("الإجمالي:          7.70 ج.م\n");
+    receipt.push_str("================================\n\n");
     
-    // Set text with RTL support
-    let attrs = Attrs::new();
-    buffer.set_text(&mut font_system, text, attrs, Shaping::Advanced);
+    receipt.push_str("    شكراً لك على الشراء!\n");
+    receipt.push_str("    نتمنى رؤيتك مرة أخرى\n\n\n\n");
     
-    // Layout the text
-    buffer.shape_until_scroll(&mut font_system, false);
-    
-    // Calculate required height
-    let mut max_height = 0;
-    for run in buffer.layout_runs() {
-        max_height = max_height.max((run.line_y + metrics.line_height) as u32);
-    }
-    
-    let height = max_height + 10; // Add padding
-    let mut img = GrayImage::new(width_px, height);
-    
-    // Initialize to WHITE background (255 = white)
-    for pixel in img.pixels_mut() {
-        *pixel = Luma([255]);
-    }
-    
-    // Draw text (BLACK on WHITE)
-    for run in buffer.layout_runs() {
-        for glyph in run.glyphs.iter() {
-            let physical_glyph = glyph.physical((0.0, 0.0), 1.0);
-            
-            if let Some(image) = swash_cache.get_image(&mut font_system, physical_glyph.cache_key) {
-                let x = physical_glyph.x as i32;
-                let y = (run.line_y as i32) + physical_glyph.y;
-                
-                // Draw glyph
-                for (gx, gy, pixel) in image.data.iter().enumerate().filter_map(|(i, &p)| {
-                    if p > 0 {
-                        let gx = (i % image.placement.width as usize) as i32;
-                        let gy = (i / image.placement.width as usize) as i32;
-                        Some((gx, gy, p))
-                    } else {
-                        None
-                    }
-                }) {
-                    let px = x + gx;
-                    let py = y + gy;
-                    if px >= 0 && px < width_px as i32 && py >= 0 && py < height as i32 {
-                        // Draw black text: pixel value is opacity, invert to get darkness
-                        img.put_pixel(px as u32, py as u32, Luma([255 - pixel]));
-                    }
-                }
-            }
-        }
-    }
-    
-    // Convert to grayscale Vec
-    (img.to_vec(), width_px, height)
-}
-
-// Convert grayscale to 1-bit packed bitmap (MSB first)
-fn to_1bpp_packed(width: u32, height: u32, gray: &[u8]) -> Vec<u8> {
-    let bytes_per_row = (width + 7) / 8;
-    let mut packed = vec![0u8; (bytes_per_row * height) as usize];
-    
-    for y in 0..height {
-        for x in 0..width {
-            let gray_val = gray[(y * width + x) as usize];
-            // Threshold: darker pixels (< 128) = print black (1), light pixels (>= 128) = don't print (0)
-            if gray_val < 128 {
-                let byte_idx = (y * bytes_per_row + x / 8) as usize;
-                let bit_idx = 7 - (x % 8);
-                packed[byte_idx] |= 1 << bit_idx;
-            }
-        }
-    }
-    
-    packed
-}
-
-// Test function: print a simple black square
-#[tauri::command]
-fn test_bitmap_square(printer_name: String) -> Result<String, String> {
-    let mut commands = Vec::new();
-    
-    // Init
-    commands.extend_from_slice(&[0x1B, 0x40]);
-    
-    // Create a 100x100 black square
-    let width = 100u32;
-    let height = 100u32;
-    let width_bytes = (width + 7) / 8;
-    
-    // All bits set to 1 = all black
-    let bitmap = vec![0xFFu8; (width_bytes * height) as usize];
-    
-    commands.extend(escpos_raster_command(width, height, &bitmap));
-    
-    commands.extend_from_slice(&[0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x00]);
-    
-    // Send to printer (Windows only for now)
-    #[cfg(target_os = "windows")]
-    {
-        use std::ptr;
-        use windows::Win32::Graphics::Printing::*;
-        use windows::Win32::Foundation::*;
-        use windows::core::*;
-        
-        unsafe {
-            let mut printer_name_wide: Vec<u16> = printer_name.encode_utf16().chain(std::iter::once(0)).collect();
-            let mut h_printer = Default::default();
-            
-            let result = OpenPrinterW(
-                PWSTR(printer_name_wide.as_mut_ptr()),
-                &mut h_printer,
-                None,
-            );
-            
-            if result.is_err() {
-                return Err("Failed to open printer".to_string());
-            }
-            
-            let mut doc_name: Vec<u16> = "Test\0".encode_utf16().collect();
-            let mut datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
-            
-            let doc_info = DOC_INFO_1W {
-                pDocName: PWSTR(doc_name.as_mut_ptr()),
-                pOutputFile: PWSTR(ptr::null_mut()),
-                pDatatype: PWSTR(datatype.as_mut_ptr()),
-            };
-            
-            StartDocPrinterW(h_printer, 1, &doc_info);
-            StartPagePrinter(h_printer);
-            
-            let mut bytes_written = 0u32;
-            WritePrinter(
-                h_printer,
-                commands.as_ptr() as *const _,
-                commands.len() as u32,
-                &mut bytes_written,
-            );
-            
-            EndPagePrinter(h_printer);
-            EndDocPrinter(h_printer);
-            let _ = ClosePrinter(h_printer);
-        }
-    }
-    
-    Ok(format!("Test square printed! If you see a black square, raster works!"))
+    receipt
 }
 
 #[tauri::command]
 fn print_receipt(printer_name: String) -> Result<String, String> {
-    // SIMPLIFIED: Mix text and bitmap rendering to minimize paper waste
-    let mut commands = Vec::new();
-    let width_px = 384; // 58mm printer width - smaller to be safe!
-    
-    // ESC @ - Initialize printer
-    commands.extend_from_slice(&[0x1B, 0x40]);
-    
-    // Center alignment for header
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
-    
-    // Store name - BITMAP (Arabic text)
-    let (gray, w, h) = render_text_to_bitmap("متجر عينة", width_px, 28.0);
-    if h > 100 { // Safety check!
-        return Err(format!("Bitmap too tall: {} pixels. Aborting to save paper!", h));
-    }
-    let bitmap = to_1bpp_packed(w, h, &gray);
-    commands.extend(escpos_raster_command(w, h, &bitmap));
-    commands.push(0x0A);
-    
-    // Address - BITMAP (contains Arabic)
-    let (gray, w, h) = render_text_to_bitmap("123 شارع الرئيسي", width_px, 20.0);
-    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
-    let bitmap = to_1bpp_packed(w, h, &gray);
-    commands.extend(escpos_raster_command(w, h, &bitmap));
-    commands.push(0x0A);
-    
-    // Phone - ASCII only
-    commands.extend_from_slice(b"Tel: (555) 123-4567\n\n");
-    
-    // Divider - ASCII
-    commands.extend_from_slice(b"--------------------------------\n");
-    
-    // Items header - BITMAP (Arabic)
-    let (gray, w, h) = render_text_to_bitmap("الصنف", width_px, 20.0);
-    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
-    let bitmap = to_1bpp_packed(w, h, &gray);
-    commands.extend(escpos_raster_command(w, h, &bitmap));
-    commands.push(0x0A);
-    
-    commands.extend_from_slice(b"--------------------------------\n");
-    
-    // Right align for items
-    commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
-    
-    // Item 1: Apple - BITMAP (Arabic name only)
-    let (gray, w, h) = render_text_to_bitmap("تفاح", width_px, 20.0);
-    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
-    let bitmap = to_1bpp_packed(w, h, &gray);
-    commands.extend(escpos_raster_command(w, h, &bitmap));
-    commands.push(0x0A);
-    // Price in ASCII (center aligned)
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
-    commands.extend_from_slice(b"2x       2.50 EGP\n");
-    
-    // Item 2: Banana
-    commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
-    let (gray, w, h) = render_text_to_bitmap("موز", width_px, 20.0);
-    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
-    let bitmap = to_1bpp_packed(w, h, &gray);
-    commands.extend(escpos_raster_command(w, h, &bitmap));
-    commands.push(0x0A);
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
-    commands.extend_from_slice(b"3x       1.50 EGP\n");
-    
-    // Item 3: Orange
-    commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
-    let (gray, w, h) = render_text_to_bitmap("برتقال", width_px, 20.0);
-    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
-    let bitmap = to_1bpp_packed(w, h, &gray);
-    commands.extend(escpos_raster_command(w, h, &bitmap));
-    commands.push(0x0A);
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
-    commands.extend_from_slice(b"1x       3.00 EGP\n");
-    
-    commands.extend_from_slice(b"--------------------------------\n");
-    
-    // Totals - BITMAP for Arabic labels
-    commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
-    let (gray, w, h) = render_text_to_bitmap("المجموع:", width_px, 20.0);
-    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
-    let bitmap = to_1bpp_packed(w, h, &gray);
-    commands.extend(escpos_raster_command(w, h, &bitmap));
-    commands.extend_from_slice(b"  7.00 EGP\n");
-    
-    let (gray, w, h) = render_text_to_bitmap("الضريبة:", width_px, 20.0);
-    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
-    let bitmap = to_1bpp_packed(w, h, &gray);
-    commands.extend(escpos_raster_command(w, h, &bitmap));
-    commands.extend_from_slice(b"  0.70 EGP\n");
-    
-    // Bold for total
-    commands.extend_from_slice(&[0x1B, 0x45, 0x01]);
-    let (gray, w, h) = render_text_to_bitmap("الإجمالي:", width_px, 24.0);
-    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
-    let bitmap = to_1bpp_packed(w, h, &gray);
-    commands.extend(escpos_raster_command(w, h, &bitmap));
-    commands.extend_from_slice(b"  7.70 EGP\n");
-    commands.extend_from_slice(&[0x1B, 0x45, 0x00]);
-    
-    commands.push(0x0A);
-    
-    // Footer - center aligned
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
-    let (gray, w, h) = render_text_to_bitmap("شكراً لزيارتكم", width_px, 20.0);
-    if h > 100 { return Err(format!("Bitmap too tall: {}", h)); }
-    let bitmap = to_1bpp_packed(w, h, &gray);
-    commands.extend(escpos_raster_command(w, h, &bitmap));
-    commands.push(0x0A);
-    
-    // Minimal padding
-    commands.extend_from_slice(&[0x0A, 0x0A, 0x0A]);
-    
-    // Paper cut
-    commands.extend_from_slice(&[0x1D, 0x56, 0x00]);
-    
-    // Send to printer
-    #[cfg(target_os = "macos")]
-    {
-        use std::process::Command;
-        use std::fs;
-        use std::path::PathBuf;
-        
-        // Create a temporary file with the ESC/POS commands
-        let temp_path = PathBuf::from("/tmp/receipt.bin");
-        fs::write(&temp_path, &commands)
-            .map_err(|e| format!("Failed to write temp file: {}", e))?;
-        
-        // Use lpr to send the file to the printer
-        let output = Command::new("lpr")
-            .arg("-P")
-            .arg(&printer_name)
-            .arg("-o")
-            .arg("raw")
-            .arg(&temp_path)
-            .output()
-            .map_err(|e| format!("Failed to execute lpr: {}", e))?;
-        
-        // Clean up temp file
-        let _ = fs::remove_file(&temp_path);
-        
-        if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Print command failed: {}", error));
-        }
-    }
+    // Use Windows GDI Text printing - same as Electron!
+    // Send as plain text, let Windows printer driver handle Arabic rendering
+    let text_data = generate_text_receipt();
+    let text_bytes = text_data.as_bytes();
     
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::Foundation::HANDLE;
         use windows::Win32::Graphics::Printing::{
-            OpenPrinterW, StartDocPrinterW, StartPagePrinter, WritePrinter,
-            EndPagePrinter, EndDocPrinter, ClosePrinter, DOC_INFO_1W,
+            OpenPrinterW, StartDocPrinterW, WritePrinter,
+            EndDocPrinter, ClosePrinter, DOC_INFO_1W,
         };
         use windows::core::PWSTR;
         use std::ptr;
@@ -400,17 +104,17 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
             );
             
             if result.is_err() {
-                return Err(format!("Failed to open printer '{}'. Make sure the printer is installed and accessible.", printer_name));
+                return Err(format!("Failed to open printer '{}'.", printer_name));
             }
             
-            // Set up document info - Use RAW mode for ESC/POS commands
+            // Set up document info - NO datatype = use default TEXT rendering!
+            // This lets Windows GDI render Arabic with proper fonts
             let mut doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
-            let mut datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
             
             let doc_info = DOC_INFO_1W {
                 pDocName: PWSTR(doc_name.as_mut_ptr()),
                 pOutputFile: PWSTR(ptr::null_mut()),
-                pDatatype: PWSTR(datatype.as_mut_ptr()),
+                pDatatype: PWSTR(ptr::null_mut()), // NULL = use printer driver's default rendering (TEXT mode with GDI)
             };
             
             // Start document
@@ -420,64 +124,24 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
                 return Err("Failed to start print job".to_string());
             }
             
-            // Start page
-            let page_result = StartPagePrinter(h_printer);
-            if !page_result.as_bool() {
-                let _ = EndDocPrinter(h_printer);
-                let _ = ClosePrinter(h_printer);
-                return Err("Failed to start page".to_string());
-            }
-            
-            // Write data
+            // Write text data (Windows will render with proper Arabic fonts!)
             let mut bytes_written: u32 = 0;
             let write_result = WritePrinter(
                 h_printer,
-                commands.as_ptr() as *const _,
-                commands.len() as u32,
+                text_bytes.as_ptr() as *const _,
+                text_bytes.len() as u32,
                 &mut bytes_written,
             );
             
             if !write_result.as_bool() {
-                let _ = EndPagePrinter(h_printer);
                 let _ = EndDocPrinter(h_printer);
                 let _ = ClosePrinter(h_printer);
                 return Err("Failed to write to printer".to_string());
             }
             
-            // End page and document
-            let _ = EndPagePrinter(h_printer);
+            // End document
             let _ = EndDocPrinter(h_printer);
             let _ = ClosePrinter(h_printer);
-        }
-    }
-    
-    #[cfg(target_os = "linux")]
-    {
-        use std::process::Command;
-        use std::fs;
-        use std::path::PathBuf;
-        
-        // Create a temporary file with the ESC/POS commands
-        let temp_path = PathBuf::from("/tmp/receipt.bin");
-        fs::write(&temp_path, &commands)
-            .map_err(|e| format!("Failed to write temp file: {}", e))?;
-        
-        // Use lpr to send the file to the printer
-        let output = Command::new("lpr")
-            .arg("-P")
-            .arg(&printer_name)
-            .arg("-o")
-            .arg("raw")
-            .arg(&temp_path)
-            .output()
-            .map_err(|e| format!("Failed to execute lpr: {}", e))?;
-        
-        // Clean up temp file
-        let _ = fs::remove_file(&temp_path);
-        
-        if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Print command failed: {}", error));
         }
     }
     
@@ -488,7 +152,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt, test_bitmap_square])
+        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
