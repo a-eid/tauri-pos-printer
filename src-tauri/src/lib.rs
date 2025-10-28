@@ -1,6 +1,10 @@
 use printers::get_printers;
 use serde::{Deserialize, Serialize};
-use encoding_rs::WINDOWS_1256;
+use cosmic_text::{Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache};
+use image::{GrayImage, Luma};
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
+use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PrinterInfo {
@@ -39,16 +43,115 @@ fn get_thermal_printers() -> Result<Vec<PrinterInfo>, String> {
     Ok(thermal_printers)
 }
 
-// Helper function to encode UTF-8 text to Windows-1256 for thermal printers
-fn encode_arabic(text: &str) -> Vec<u8> {
-    // Try Windows-1256 encoding
-    let (encoded, _, _) = WINDOWS_1256.encode(text);
-    encoded.to_vec()
+// Global font system for text rendering with Arabic support
+static FONT_SYSTEM: Lazy<Mutex<FontSystem>> = Lazy::new(|| {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts(); // Load all Windows fonts including Arabic ones
+    Mutex::new(FontSystem::new_with_locale_and_db("ar".to_string(), db))
+});
+
+// Generate ESC/POS GS v 0 command for printing bitmap
+fn escpos_raster_command(width_px: u32, height_px: u32, bitmap: &[u8]) -> Vec<u8> {
+    let mut cmd = Vec::new();
+    
+    // GS v 0 m xL xH yL yH [data]
+    cmd.push(0x1D); // GS
+    cmd.push(b'v');
+    cmd.push(0x30); // '0'
+    cmd.push(0x00); // m = 0 (normal mode)
+    
+    // Width in bytes
+    let width_bytes = (width_px + 7) / 8;
+    cmd.push((width_bytes & 0xFF) as u8); // xL
+    cmd.push(((width_bytes >> 8) & 0xFF) as u8); // xH
+    
+    // Height in pixels
+    cmd.push((height_px & 0xFF) as u8); // yL
+    cmd.push(((height_px >> 8) & 0xFF) as u8); // yH
+    
+    // Bitmap data
+    cmd.extend_from_slice(bitmap);
+    
+    cmd
 }
 
-// Alternative: Just use UTF-8 bytes directly (some modern printers support this)
-fn encode_utf8(text: &str) -> Vec<u8> {
-    text.as_bytes().to_vec()
+// Render Arabic text to grayscale bitmap
+fn render_text_to_bitmap(text: &str, width_px: u32, font_size: f32) -> (Vec<u8>, u32, u32) {
+    let mut font_system = FONT_SYSTEM.lock().unwrap();
+    let mut swash_cache = SwashCache::new();
+    
+    // Create buffer with metrics
+    let metrics = Metrics::new(font_size, font_size * 1.2);
+    let mut buffer = Buffer::new(&mut font_system, metrics);
+    buffer.set_size(&mut font_system, width_px as f32, f32::INFINITY);
+    
+    // Set text with RTL support
+    let attrs = Attrs::new();
+    buffer.set_text(&mut font_system, text, attrs, Shaping::Advanced);
+    
+    // Layout the text
+    buffer.shape_until_scroll(&mut font_system, false);
+    
+    // Calculate required height
+    let mut max_height = 0;
+    for run in buffer.layout_runs() {
+        max_height = max_height.max((run.line_y + metrics.line_height) as u32);
+    }
+    
+    let height = max_height + 10; // Add padding
+    let mut img = GrayImage::new(width_px, height);
+    
+    // Draw text
+    for run in buffer.layout_runs() {
+        for glyph in run.glyphs.iter() {
+            let physical_glyph = glyph.physical((0.0, 0.0), 1.0);
+            
+            if let Some(image) = swash_cache.get_image(&mut font_system, physical_glyph.cache_key) {
+                let x = physical_glyph.x as i32;
+                let y = (run.line_y as i32) + physical_glyph.y;
+                
+                // Draw glyph
+                for (gx, gy, pixel) in image.data.iter().enumerate().filter_map(|(i, &p)| {
+                    if p > 0 {
+                        let gx = (i % image.placement.width as usize) as i32;
+                        let gy = (i / image.placement.width as usize) as i32;
+                        Some((gx, gy, p))
+                    } else {
+                        None
+                    }
+                }) {
+                    let px = x + gx;
+                    let py = y + gy;
+                    if px >= 0 && px < width_px as i32 && py >= 0 && py < height as i32 {
+                        img.put_pixel(px as u32, py as u32, Luma([255 - pixel]));
+                    }
+                }
+            }
+        }
+    }
+    
+    // Convert to grayscale Vec
+    (img.to_vec(), width_px, height)
+}
+
+// Convert grayscale to 1-bit packed bitmap (MSB first)
+fn to_1bpp_packed(width: u32, height: u32, gray: &[u8]) -> Vec<u8> {
+    let bytes_per_row = (width + 7) / 8;
+    let mut packed = vec![0u8; (bytes_per_row * height) as usize];
+    
+    for y in 0..height {
+        for x in 0..width {
+            let gray_val = gray[(y * width + x) as usize];
+            // Threshold: > 128 = white (0), <= 128 = black (1)
+            if gray_val <= 128 {
+                let byte_idx = (y * bytes_per_row + x / 8) as usize;
+                let bit_idx = 7 - (x % 8);
+                packed[byte_idx] |= 1 << bit_idx;
+            }
+        }
+    }
+    
+    packed
 }
 
 #[tauri::command]
