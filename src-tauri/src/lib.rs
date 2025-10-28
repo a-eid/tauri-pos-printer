@@ -1,10 +1,9 @@
 use printers::get_printers;
 use serde::{Deserialize, Serialize};
-use cosmic_text::{Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
 use image::{GrayImage, Luma};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
-use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PrinterInfo {
@@ -156,88 +155,93 @@ fn to_1bpp_packed(width: u32, height: u32, gray: &[u8]) -> Vec<u8> {
 
 #[tauri::command]
 fn print_receipt(printer_name: String) -> Result<String, String> {
-    // Simplified approach: Send plain UTF-8 text with minimal formatting
-    // No code page commands, no encoding conversion - just raw UTF-8 bytes
+    // Bitmap-based Arabic printing - renders text as images with proper RTL & shaping
     let mut commands = Vec::new();
+    let width_px = 576; // 80mm printer ~72dpi
     
-    // ESC @ - Initialize printer only
+    // ESC @ - Initialize printer
     commands.extend_from_slice(&[0x1B, 0x40]);
     
-    // NO code page command - use printer's default
+    // Store name (large font, centered)
+    let (gray, w, h) = render_text_to_bitmap("متجر عينة", width_px, 36.0);
+    let bitmap = to_1bpp_packed(w, h, &gray);
+    commands.extend(escpos_raster_command(w, h, &bitmap));
+    commands.push(0x0A); // Line feed
     
-    // ESC a 1 - Center alignment
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
+    // Address lines (normal font)
+    for line in ["123 شارع الرئيسي", "المدينة، المحافظة 12345", "هاتف: (555) 123-4567"] {
+        let (gray, w, h) = render_text_to_bitmap(line, width_px, 24.0);
+        let bitmap = to_1bpp_packed(w, h, &gray);
+        commands.extend(escpos_raster_command(w, h, &bitmap));
+        commands.push(0x0A);
+    }
     
-    // GS ! 0x11 - Double height and width
-    commands.extend_from_slice(&[0x1D, 0x21, 0x11]);
+    commands.push(0x0A); // Extra space
     
-    // Store name in Arabic
-    commands.extend(encode_utf8("متجر عينة\n"));
+    // Divider (plain ASCII - no need for bitmap)
+    commands.extend_from_slice(b"================================\n");
     
-    // GS ! 0x00 - Normal size
-    commands.extend_from_slice(&[0x1D, 0x21, 0x00]);
-    
-    commands.extend(encode_utf8("123 شارع الرئيسي\n"));
-    commands.extend(encode_utf8("المدينة، المحافظة 12345\n"));
-    commands.extend(encode_utf8("هاتف: (555) 123-4567\n"));
-    
-    // Line feed
+    // Items header
+    let (gray, w, h) = render_text_to_bitmap("الصنف          الكمية    السعر", width_px, 24.0);
+    let bitmap = to_1bpp_packed(w, h, &gray);
+    commands.extend(escpos_raster_command(w, h, &bitmap));
     commands.push(0x0A);
     
-    // ESC a 1 - Center for divider
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
     commands.extend_from_slice(b"================================\n");
     
-    // Items header - center aligned
-    commands.extend(encode_utf8("الصنف          الكمية    السعر\n"));
+    // Items with prices
+    let items = vec![
+        "تفاح                2x    2.50 ج.م",
+        "موز                 3x    1.50 ج.م",
+        "برتقال              1x    3.00 ج.م",
+    ];
+    
+    for item in items {
+        let (gray, w, h) = render_text_to_bitmap(item, width_px, 24.0);
+        let bitmap = to_1bpp_packed(w, h, &gray);
+        commands.extend(escpos_raster_command(w, h, &bitmap));
+        commands.push(0x0A);
+    }
+    
     commands.extend_from_slice(b"================================\n");
     
-    // Items - Right aligned for Arabic text
-    commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
-    commands.extend(encode_utf8("تفاح\n"));
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
-    commands.extend(encode_utf8("2.50 ج.م         2x\n"));
+    // Totals
+    let totals = vec![
+        "المجموع الفرعي:        7.00 ج.م",
+        "الضريبة (10٪):         0.70 ج.م",
+    ];
     
-    commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
-    commands.extend(encode_utf8("موز\n"));
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
-    commands.extend(encode_utf8("1.50 ج.م         3x\n"));
+    for total in totals {
+        let (gray, w, h) = render_text_to_bitmap(total, width_px, 24.0);
+        let bitmap = to_1bpp_packed(w, h, &gray);
+        commands.extend(escpos_raster_command(w, h, &bitmap));
+        commands.push(0x0A);
+    }
     
-    commands.extend_from_slice(&[0x1B, 0x61, 0x02]); // Right align
-    commands.extend(encode_utf8("برتقال\n"));
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // Center for price/qty
-    commands.extend(encode_utf8("3.00 ج.م         1x\n"));
-    
-    // Divider - center aligned
-    commands.extend_from_slice(b"================================\n");
-    
-    // Totals - Right aligned
-    commands.extend_from_slice(&[0x1B, 0x61, 0x02]);
-    commands.extend(encode_utf8("المجموع الفرعي:        7.00 ج.م\n"));
-    commands.extend(encode_utf8("الضريبة (10٪):         0.70 ج.م\n"));
-    
-    // Bold for total
-    commands.extend_from_slice(&[0x1B, 0x45, 0x01]); // ESC E 1 - Bold on
-    commands.extend_from_slice(&[0x1D, 0x21, 0x11]); // Double size
-    commands.extend(encode_utf8("الإجمالي:             7.70 ج.م\n"));
-    commands.extend_from_slice(&[0x1D, 0x21, 0x00]); // Normal size
-    commands.extend_from_slice(&[0x1B, 0x45, 0x00]); // ESC E 0 - Bold off
-    
-    // Line feed
+    // Grand total (larger font to emphasize)
+    let (gray, w, h) = render_text_to_bitmap("الإجمالي:             7.70 ج.م", width_px, 32.0);
+    let bitmap = to_1bpp_packed(w, h, &gray);
+    commands.extend(escpos_raster_command(w, h, &bitmap));
+    commands.push(0x0A);
     commands.push(0x0A);
     
-    // ESC a 1 - Center alignment for footer
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
+    // Footer
+    let footer = vec![
+        "شكراً لك على الشراء!",
+        "نتمنى رؤيتك مرة أخرى",
+    ];
     
-    commands.extend_from_slice(&[0x1B, 0x45, 0x01]); // Bold on
-    commands.extend(encode_utf8("شكراً لك على الشراء!\n"));
-    commands.extend_from_slice(&[0x1B, 0x45, 0x00]); // Bold off
-    commands.extend(encode_utf8("نتمنى رؤيتك مرة أخرى\n"));
+    for line in footer {
+        let (gray, w, h) = render_text_to_bitmap(line, width_px, 24.0);
+        let bitmap = to_1bpp_packed(w, h, &gray);
+        commands.extend(escpos_raster_command(w, h, &bitmap));
+        commands.push(0x0A);
+    }
     
-    // Line feeds - add extra padding before cut (approximately 1.5cm)
+    // Padding before cut
     commands.extend_from_slice(&[0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0x0A]);
     
-    // GS V 0 - Full cut
+    // Paper cut
     commands.extend_from_slice(&[0x1D, 0x56, 0x00]);
     
     // Send to printer
