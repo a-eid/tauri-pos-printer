@@ -220,16 +220,16 @@ async fn print_receipt_image(printer_name: String, image_data_url: String) -> Re
     
     // Resize for 80mm thermal printer at 203 DPI
     // 576px width = 72mm print width (with margins) = perfect for 80mm paper
-    // Limit height to 800px maximum to prevent paper waste
-    let img = img.resize(576, 800, image::imageops::FilterType::Lanczos3);
+    // Max height: 30cm = 2400px at 203 DPI
+    let img = img.resize(576, 2400, image::imageops::FilterType::Lanczos3);
     let gray_img = img.to_luma8();
     
     // Convert to 1-bit monochrome using dithering
     let (width, height) = gray_img.dimensions();
     
-    // STRICT SAFETY CHECK: Prevent excessive paper printing
-    if height > 800 {
-        return Err(format!("❌ Image too tall ({} pixels). Cropped to 800px to prevent paper waste.", height));
+    // STRICT SAFETY CHECK: Max 30cm (2400px at 203 DPI)
+    if height > 2400 {
+        return Err(format!("❌ Image too tall ({} pixels). Max allowed: 2400px (30cm).", height));
     }
     
     let monochrome = apply_dithering(&gray_img);
