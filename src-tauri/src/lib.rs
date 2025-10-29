@@ -206,49 +206,35 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
 async fn print_receipt_html(app: tauri::AppHandle, printer_name: String) -> Result<String, String> {
     use tauri::Manager;
     
-    // Create a visible webview window to render the HTML receipt
-    // (visible for now so you can see if it loads)
+    // Create a minimized, hidden webview window
     let webview = tauri::WebviewWindowBuilder::new(
         &app,
         "print-receipt",
         tauri::WebviewUrl::App("print-receipt.html".into())
     )
-    .title("Receipt Preview - Click Print")
+    .title("Printing...")
     .inner_size(400.0, 700.0)
-    .visible(true) // VISIBLE for debugging - you'll see the receipt
-    .center()
+    .visible(false) // Hidden
+    .skip_taskbar(true) // Don't show in taskbar
     .build()
-    .map_err(|e| format!("Failed to create print window: {}. Make sure print-receipt.html is in the public folder.", e))?;
+    .map_err(|e| format!("Failed to create print window: {}", e))?;
     
-    // Wait for page to load completely
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+    // Wait for page to load
+    tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
     
-    // Add a Print button via JavaScript instead of auto-printing
-    let print_script = r#"
-        (function() {
-            // Add a print button to the page
-            const btn = document.createElement('button');
-            btn.textContent = 'Print This Receipt';
-            btn.style.cssText = 'position: fixed; top: 10px; left: 50%; transform: translateX(-50%); padding: 15px 30px; font-size: 16px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; z-index: 9999; box-shadow: 0 4px 6px rgba(0,0,0,0.1);';
-            btn.onclick = function() {
-                window.print();
-            };
-            document.body.appendChild(btn);
-            
-            // Also auto-trigger print after a moment
-            setTimeout(() => {
-                window.print();
-            }, 500);
-        })();
-    "#;
+    // Trigger print dialog automatically
+    // Note: Browser security requires showing the print dialog - there's no way around this
+    // But if you set NCR 7197 as default printer, it will pre-select it
+    webview.eval("window.print();")
+        .map_err(|e| format!("Failed to trigger print: {}", e))?;
     
-    webview.eval(print_script)
-        .map_err(|e| format!("Failed to execute print script: {}", e))?;
+    // Wait for user to click Print in the dialog
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     
-    // Keep window open so user can print multiple times if needed
-    // They can close it manually
+    // Note: Window will stay open until user confirms/cancels print dialog
+    // We'll let Tauri clean it up automatically
     
-    Ok("Receipt window opened! You should see the Arabic receipt. Click the Print button or Ctrl+P to print.".to_string())
+    Ok("Print dialog opened! Select NCR 7197 and click Print. (Tip: Set it as default printer for faster printing)".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
