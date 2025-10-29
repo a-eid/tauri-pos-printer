@@ -204,10 +204,15 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
 // This uses Windows GDI to render Arabic text properly - same as Electron!
 #[tauri::command]
 async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Result<String, String> {
+    use tauri::Manager;
+    
+    // Generate unique label to avoid conflicts
+    let label = format!("print-receipt-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+    
     // Create a minimized, hidden webview window
     let webview = tauri::WebviewWindowBuilder::new(
         &app,
-        "print-receipt",
+        label.clone(),
         tauri::WebviewUrl::App("print-receipt.html".into())
     )
     .title("Printing...")
@@ -218,21 +223,21 @@ async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Res
     .map_err(|e| format!("Failed to create print window: {}", e))?;
     
     // Wait for page to load
-    tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
     
     // Trigger print dialog automatically
-    // Note: Browser security requires showing the print dialog - there's no way around this
-    // But if you set NCR 7197 as default printer, it will pre-select it
     webview.eval("window.print();")
         .map_err(|e| format!("Failed to trigger print: {}", e))?;
     
-    // Wait for user to click Print in the dialog
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // Wait a bit then close the window
+    tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
     
-    // Note: Window will stay open until user confirms/cancels print dialog
-    // We'll let Tauri clean it up automatically
+    // Close the window after printing
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.close();
+    }
     
-    Ok("Print dialog opened! Select NCR 7197 and click Print. (Tip: Set it as default printer for faster printing)".to_string())
+    Ok("Print dialog opened! Click Print to print.".to_string())
 }
 
 // TRULY SILENT printing using Windows GDI directly (no dialogs!)
@@ -240,38 +245,24 @@ async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Res
 fn print_receipt_silent(printer_name: String) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Foundation::{HANDLE, RECT};
+        use windows::Win32::Foundation::RECT;
         use windows::Win32::Graphics::Gdi::{
-            CreateDCW, DeleteDC, CreateFontW, SelectObject, DeleteObject,
+            CreateDCW, DeleteDC, StartDocW, EndDoc, StartPage, EndPage,
+            CreateFontW, SelectObject, DeleteObject,
             SetTextAlign, SetBkMode, GetDeviceCaps, DrawTextW,
             HDC, HORZRES, VERTRES, LOGPIXELSY,
             FW_NORMAL, FW_BOLD, ARABIC_CHARSET, OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, FF_DONTCARE,
             TA_RIGHT, TA_RTLREADING, TRANSPARENT, DT_CENTER, DT_RTLREADING,
-        };
-        use windows::Win32::Graphics::Printing::{
-            OpenPrinterW, ClosePrinter, StartDocPrinterW, EndDocPrinter,
-            StartPagePrinter, EndPagePrinter, DOC_INFO_1W,
+            DOCINFOW,
         };
         use windows::core::PWSTR;
         use std::ptr;
         
         unsafe {
-            // Open printer
             let printer_name_wide: Vec<u16> = printer_name.encode_utf16().chain(std::iter::once(0)).collect();
-            let mut h_printer: HANDLE = HANDLE::default();
             
-            let result = OpenPrinterW(
-                PWSTR(printer_name_wide.as_ptr() as *mut u16),
-                &mut h_printer,
-                None,
-            );
-            
-            if result.is_err() {
-                return Err(format!("Failed to open printer: {}", printer_name));
-            }
-            
-            // Get printer DC (Device Context)
+            // Create GDI device context for the printer
             let h_dc = CreateDCW(
                 None,
                 PWSTR(printer_name_wide.as_ptr() as *mut u16),
@@ -280,33 +271,29 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             );
             
             if h_dc.is_invalid() {
-                let _ = ClosePrinter(h_printer);
                 return Err("Failed to create printer device context".to_string());
             }
             
-            // Start document using printer API (not GDI document API)
+            // Start GDI document (proper graphics mode, NOT RAW mode!)
             let mut doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
-            let mut datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
             
-            let doc_info = DOC_INFO_1W {
-                pDocName: PWSTR(doc_name.as_mut_ptr()),
-                pOutputFile: PWSTR(ptr::null_mut()),
-                pDatatype: PWSTR(datatype.as_mut_ptr()),
+            let doc_info = DOCINFOW {
+                cbSize: std::mem::size_of::<DOCINFOW>() as i32,
+                lpszDocName: PWSTR(doc_name.as_mut_ptr()),
+                lpszOutput: PWSTR(ptr::null_mut()),
+                lpszDatatype: PWSTR(ptr::null_mut()),
+                fwType: 0,
             };
             
-            let job_id = StartDocPrinterW(h_printer, 1, &doc_info);
-            if job_id == 0 {
+            if StartDocW(h_dc, &doc_info) <= 0 {
                 let _ = DeleteDC(h_dc);
-                let _ = ClosePrinter(h_printer);
                 return Err("Failed to start document".to_string());
             }
             
-            // Start page
-            let page_result = StartPagePrinter(h_printer);
-            if !page_result.as_bool() {
-                let _ = EndDocPrinter(h_printer);
+            // Start GDI page
+            if StartPage(h_dc) <= 0 {
+                let _ = EndDoc(h_dc);
                 let _ = DeleteDC(h_dc);
-                let _ = ClosePrinter(h_printer);
                 return Err("Failed to start page".to_string());
             }
             
@@ -343,7 +330,7 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             
             // Get page dimensions
             let page_width = GetDeviceCaps(h_dc, HORZRES);
-            let page_height = GetDeviceCaps(h_dc, VERTRES);
+            let _page_height = GetDeviceCaps(h_dc, VERTRES);
             let margin_x = page_width / 10; // 10% margins
             let mut y_pos = 100; // Start position
             let line_height = 60; // Space between lines
@@ -452,16 +439,15 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             
             print_centered_text(h_dc, "نتمنى رؤيتك مرة أخرى", y_pos);
             
-            // Cleanup
+            // Cleanup fonts
             SelectObject(h_dc, old_font);
             let _ = DeleteObject(h_font);
             let _ = DeleteObject(h_font_bold);
             
-            // End page and document
-            let _ = EndPagePrinter(h_printer);
-            let _ = EndDocPrinter(h_printer);
+            // End GDI page and document (THIS ACTUALLY SENDS TO PRINTER!)
+            let _ = EndPage(h_dc);
+            let _ = EndDoc(h_dc);
             let _ = DeleteDC(h_dc);
-            let _ = ClosePrinter(h_printer);
         }
     }
     
