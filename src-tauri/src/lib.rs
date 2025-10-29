@@ -204,8 +204,6 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
 // This uses Windows GDI to render Arabic text properly - same as Electron!
 #[tauri::command]
 async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Result<String, String> {
-    use tauri::Manager;
-    
     // Create a minimized, hidden webview window
     let webview = tauri::WebviewWindowBuilder::new(
         &app,
@@ -242,15 +240,14 @@ async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Res
 fn print_receipt_silent(printer_name: String) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Foundation::{HANDLE, RECT};
         use windows::Win32::Graphics::Gdi::{
             CreateDCW, DeleteDC, CreateFontW, SelectObject, DeleteObject,
-            SetTextAlign, SetBkMode, GetDeviceCaps, DrawTextW, MulDiv,
-            HDC, HGDIOBJ, HORZRES, VERTRES, LOGPIXELSY,
+            SetTextAlign, SetBkMode, GetDeviceCaps, DrawTextW,
+            HDC, HORZRES, VERTRES, LOGPIXELSY,
             FW_NORMAL, FW_BOLD, ARABIC_CHARSET, OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, FF_DONTCARE,
             TA_RIGHT, TA_RTLREADING, TRANSPARENT, DT_CENTER, DT_RTLREADING,
-            RECT,
         };
         use windows::Win32::Graphics::Printing::{
             OpenPrinterW, ClosePrinter, StartDocPrinterW, EndDocPrinter,
@@ -316,8 +313,13 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             // Set up font for Arabic text
             // Using Tahoma which has excellent Arabic support
             let font_name: Vec<u16> = "Tahoma\0".encode_utf16().collect();
+            
+            // Calculate font size in pixels (manual MulDiv: 14pt * DPI / 72)
+            let dpi = GetDeviceCaps(h_dc, LOGPIXELSY);
+            let font_height = -(14 * dpi / 72); // Negative for char height
+            
             let h_font = CreateFontW(
-                -MulDiv(14, GetDeviceCaps(h_dc, LOGPIXELSY), 72), // 14pt font
+                font_height,
                 0,
                 0,
                 0,
@@ -348,7 +350,7 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             
             // Helper function to print centered text
             let print_centered_text = |dc: HDC, text: &str, y: i32| {
-                let text_wide: Vec<u16> = text.encode_utf16().collect();
+                let mut text_wide: Vec<u16> = text.encode_utf16().collect();
                 let mut rect = RECT {
                     left: margin_x,
                     top: y,
@@ -357,7 +359,7 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
                 };
                 DrawTextW(
                     dc,
-                    &text_wide,
+                    &mut text_wide,
                     &mut rect,
                     DT_CENTER | DT_RTLREADING,
                 );
@@ -420,8 +422,9 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             y_pos += line_height;
             
             // Total (bold - increase font size)
+            let bold_font_height = -(18 * dpi / 72); // 18pt font
             let h_font_bold = CreateFontW(
-                -MulDiv(18, GetDeviceCaps(h_dc, LOGPIXELSY), 72),
+                bold_font_height,
                 0, 0, 0,
                 FW_BOLD.0 as i32,
                 0, 0, 0,
