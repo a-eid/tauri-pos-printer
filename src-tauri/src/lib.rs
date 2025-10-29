@@ -430,6 +430,8 @@ fn print_raw_bytes(printer_name: &str, data: &[u8]) -> Result<(), String> {
 // This uses Windows GDI to render Arabic text properly - same as Electron!
 #[tauri::command]
 async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Result<String, String> {
+    use tauri::Manager;
+    
     // Generate unique label to avoid conflicts
     let label = format!("print-receipt-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
     
