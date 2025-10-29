@@ -224,6 +224,12 @@ async fn print_receipt_image(printer_name: String, image_data_url: String) -> Re
     
     // Convert to 1-bit monochrome using dithering
     let (width, height) = gray_img.dimensions();
+    
+    // SAFETY CHECK: Prevent excessive paper printing
+    if height > 2000 {
+        return Err(format!("❌ Image too large ({} pixels high). Maximum 2000px to prevent paper waste. Use HTML Dialog method instead.", height));
+    }
+    
     let monochrome = apply_dithering(&gray_img);
     
     // Pack pixels into bytes (8 pixels per byte, MSB first)
@@ -427,29 +433,37 @@ async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Res
     // Generate unique label to avoid conflicts
     let label = format!("print-receipt-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
     
-    // Create a VISIBLE webview window for debugging
+    // Create a small minimized window (user will only see print dialog)
     let webview = tauri::WebviewWindowBuilder::new(
         &app,
         label.clone(),
         tauri::WebviewUrl::App("print-receipt.html".into())
     )
-    .title("Receipt Preview - Close after printing")
-    .inner_size(400.0, 700.0)
-    .visible(true) // VISIBLE for debugging
-    .center()
+    .title("Printing Receipt...")
+    .inner_size(400.0, 600.0)
+    .visible(false) // Hidden - only print dialog will show
+    .skip_taskbar(true)
     .build()
     .map_err(|e| format!("Failed to create print window: {}", e))?;
     
     // Wait for page to load
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
     
     // Trigger print dialog automatically
     webview.eval("window.print();")
         .map_err(|e| format!("Failed to trigger print: {}", e))?;
     
-    // Don't auto-close - let user close manually after printing
+    // Close window after 3 seconds (gives time for print job to be submitted)
+    let app_handle = app.clone();
+    let window_label = label.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        if let Some(window) = app_handle.get_webview_window(&window_label) {
+            let _ = window.close();
+        }
+    });
     
-    Ok("✅ Receipt preview opened! Dialog should appear. After printing, close the preview window.".to_string())
+    Ok("✅ Print dialog opened! Select NCR 7197 and click Print. (Window will auto-close)".to_string())
 }
 
 // TRULY SILENT printing using Windows GDI directly (no dialogs!)

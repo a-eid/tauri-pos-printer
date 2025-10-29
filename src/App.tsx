@@ -223,44 +223,53 @@ function App() {
 
 			<button
 				type="button"
-				onClick={printReceiptAsImage}
+				onClick={printReceiptHTML}
 				disabled={loading || !selectedPrinter}
 				className="print-btn primary"
 			>
-				{loading ? "Processing..." : "🖨️ Print Arabic Receipt"}
+				{loading ? "Opening..." : "🖨️ Print Arabic Receipt"}
 			</button>
 
-			<div className="secondary-buttons">
-				<button
-					type="button"
-					onClick={printReceipt}
-					disabled={loading || !selectedPrinter}
-					className="print-btn-small secondary"
-					title="English only, no Arabic support"
-				>
-					{loading ? "..." : "📄 ESC/POS"}
-				</button>
-				
-				<button
-					type="button"
-					onClick={printReceiptHTML}
-					disabled={loading || !selectedPrinter}
-					className="print-btn-small secondary"
-					title="Show print dialog"
-				>
-					{loading ? "..." : "🖨️ Dialog"}
-				</button>
+			<p style={{ fontSize: "12px", color: "#666", margin: "10px 0" }}>
+				💡 Tip: Set NCR 7197 as your default printer for faster printing
+			</p>
 
-				<button
-					type="button"
-					onClick={printReceiptSilent}
-					disabled={loading || !selectedPrinter}
-					className="print-btn-small secondary"
-					title="GDI mode (may not work on all printers)"
-				>
-					{loading ? "..." : "🔧 GDI"}
-				</button>
-			</div>
+			<details style={{ marginTop: "20px" }}>
+				<summary style={{ cursor: "pointer", fontSize: "14px", color: "#666" }}>
+					⚙️ Advanced Options (for testing)
+				</summary>
+				<div className="secondary-buttons" style={{ marginTop: "10px" }}>
+					<button
+						type="button"
+						onClick={printReceipt}
+						disabled={loading || !selectedPrinter}
+						className="print-btn-small secondary"
+						title="Works but Arabic shows as gibberish"
+					>
+						{loading ? "..." : "📄 ESC/POS"}
+					</button>
+					
+					<button
+						type="button"
+						onClick={printReceiptAsImage}
+						disabled={loading || !selectedPrinter}
+						className="print-btn-small secondary"
+						title="May print excessive paper on some printers"
+					>
+						{loading ? "..." : "🖼️ Image"}
+					</button>
+
+					<button
+						type="button"
+						onClick={printReceiptSilent}
+						disabled={loading || !selectedPrinter}
+						className="print-btn-small secondary"
+						title="GDI mode - doesn't work on thermal printers"
+					>
+						{loading ? "..." : "🔧 GDI"}
+					</button>
+				</div>
+			</details>
 
 				{message && (
 					<div
