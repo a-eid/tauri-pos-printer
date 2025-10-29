@@ -209,35 +209,29 @@ async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Res
     // Generate unique label to avoid conflicts
     let label = format!("print-receipt-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
     
-    // Create a minimized, hidden webview window
+    // Create a VISIBLE webview window for debugging
     let webview = tauri::WebviewWindowBuilder::new(
         &app,
         label.clone(),
         tauri::WebviewUrl::App("print-receipt.html".into())
     )
-    .title("Printing...")
+    .title("Receipt Preview - Close after printing")
     .inner_size(400.0, 700.0)
-    .visible(false) // Hidden
-    .skip_taskbar(true) // Don't show in taskbar
+    .visible(true) // VISIBLE for debugging
+    .center()
     .build()
     .map_err(|e| format!("Failed to create print window: {}", e))?;
     
     // Wait for page to load
-    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
     
     // Trigger print dialog automatically
     webview.eval("window.print();")
         .map_err(|e| format!("Failed to trigger print: {}", e))?;
     
-    // Wait a bit then close the window
-    tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+    // Don't auto-close - let user close manually after printing
     
-    // Close the window after printing
-    if let Some(window) = app.get_webview_window(&label) {
-        let _ = window.close();
-    }
-    
-    Ok("Print dialog opened! Click Print to print.".to_string())
+    Ok("✅ Receipt preview opened! Dialog should appear. After printing, close the preview window.".to_string())
 }
 
 // TRULY SILENT printing using Windows GDI directly (no dialogs!)
@@ -300,18 +294,20 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             
             let job_id = StartDocPrinterW(h_printer, 1, &doc_info);
             if job_id == 0 {
+                let error = std::io::Error::last_os_error();
                 let _ = DeleteDC(h_dc);
                 let _ = ClosePrinter(h_printer);
-                return Err("Failed to start document".to_string());
+                return Err(format!("Failed to start document: {} (error code: {})", error, error.raw_os_error().unwrap_or(0)));
             }
             
             // Start page
             let page_result = StartPagePrinter(h_printer);
             if !page_result.as_bool() {
+                let error = std::io::Error::last_os_error();
                 let _ = EndDocPrinter(h_printer);
                 let _ = DeleteDC(h_dc);
                 let _ = ClosePrinter(h_printer);
-                return Err("Failed to start page".to_string());
+                return Err(format!("Failed to start page: {} (error code: {})", error, error.raw_os_error().unwrap_or(0)));
             }
             
             // Set up font for Arabic text
@@ -462,10 +458,24 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             let _ = DeleteObject(h_font_bold);
             
             // End page and document (EMF mode sends GDI graphics to printer!)
-            let _ = EndPagePrinter(h_printer);
-            let _ = EndDocPrinter(h_printer);
+            let end_page_result = EndPagePrinter(h_printer);
+            if !end_page_result.as_bool() {
+                let error = std::io::Error::last_os_error();
+                eprintln!("⚠️ EndPagePrinter warning: {} (continuing...)", error);
+            }
+            
+            let end_doc_result = EndDocPrinter(h_printer);
+            if !end_doc_result.as_bool() {
+                let error = std::io::Error::last_os_error();
+                let _ = DeleteDC(h_dc);
+                let _ = ClosePrinter(h_printer);
+                return Err(format!("Failed to end document: {} (error code: {})", error, error.raw_os_error().unwrap_or(0)));
+            }
+            
             let _ = DeleteDC(h_dc);
             let _ = ClosePrinter(h_printer);
+            
+            println!("✅ Print job #{} completed successfully!", job_id);
         }
     }
     
@@ -474,7 +484,7 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
         return Err("Silent printing is only supported on Windows".to_string());
     }
     
-    Ok("Receipt printed silently! ✅ No dialogs, perfect Arabic!".to_string())
+    Ok(format!("✅ Receipt sent to printer! Check printer queue if nothing prints. (Job may be processing EMF data)"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
