@@ -17,24 +17,33 @@
 - But then using GDI `DrawTextW` commands which require graphics mode
 - The two modes are incompatible!
 
-**Fix:** Switch to pure GDI mode
-- **Before:** `OpenPrinterW` → `StartDocPrinterW` (RAW) → `StartPagePrinter` → GDI drawing (doesn't work!)
-- **After:** `CreateDCW` → `StartDocW` (GDI mode) → `StartPage` → GDI drawing → `EndPage` → `EndDoc` ✅
+**Fix:** Use NULL datatype to enable EMF (Enhanced Metafile) mode
+- **Before:** `StartDocPrinterW` with `datatype = "RAW"` → GDI drawing ignored ❌
+- **After:** `StartDocPrinterW` with `datatype = NULL` → GDI drawing recorded to EMF → sent to printer ✅
 
 **Key Changes:**
 ```rust
-// REMOVED (RAW mode):
-- OpenPrinterW, ClosePrinter
-- StartDocPrinterW, EndDocPrinter  
-- StartPagePrinter, EndPagePrinter
-- DOC_INFO_1W with datatype = "RAW"
+// Before (RAW mode - wrong):
+let mut datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
+let doc_info = DOC_INFO_1W {
+    pDocName: ...,
+    pOutputFile: ...,
+    pDatatype: PWSTR(datatype.as_mut_ptr()), // RAW = text only
+};
 
-// ADDED (GDI mode):
-- CreateDCW (only)
-- StartDocW, EndDoc
-- StartPage, EndPage
-- DOCINFOW (GDI document info)
+// After (EMF mode - correct):
+let doc_info = DOC_INFO_1W {
+    pDocName: ...,
+    pOutputFile: ...,
+    pDatatype: PWSTR(ptr::null_mut()), // NULL = EMF graphics mode ✅
+};
 ```
+
+**Why this works:**
+- Windows Printing API with `NULL` datatype uses EMF (Enhanced Metafile) format
+- EMF mode records all GDI drawing operations (including `DrawTextW`)
+- When `EndDocPrinter` is called, Windows sends the EMF data to the printer
+- Printer renders the EMF graphics (including properly shaped Arabic text)
 
 ## What to Expect
 
@@ -59,18 +68,25 @@
 
 ## Technical Details
 
-**Why GDI Mode Works:**
-1. Creates a proper Device Context (DC) for the printer
-2. Uses `StartDocW` which tells Windows "I'm sending graphics"
-3. `DrawTextW` renders Arabic text with proper shaping/RTL
-4. `EndPage` + `EndDoc` sends the rendered graphics to printer spooler
-5. Printer receives graphics data (not text), so no encoding issues
+**Why EMF Mode Works:**
+1. `OpenPrinterW` + `CreateDCW` creates both printer handle and Device Context
+2. `StartDocPrinterW` with `NULL` datatype enables EMF (Enhanced Metafile) mode
+3. `DrawTextW` renders Arabic text with proper shaping/RTL → recorded to EMF
+4. `EndPagePrinter` + `EndDocPrinter` finalizes EMF and sends to printer spooler
+5. Printer receives EMF graphics (not text), so no encoding issues!
 
 **Why RAW Mode Failed:**
-1. `StartDocPrinterW` with RAW tells Windows "I'm sending raw bytes"
-2. GDI drawing commands write to DC but don't get sent to RAW stream
-3. `EndPagePrinter` just closes the (empty) RAW data stream
+1. `StartDocPrinterW` with `"RAW"` datatype tells Windows "I'm sending raw bytes"
+2. GDI drawing commands write to DC but don't get recorded/sent
+3. `EndPagePrinter` + `EndDocPrinter` close the (empty) RAW stream
 4. Nothing actually prints!
+
+**Key Insight:**
+Windows Printing API supports multiple datatypes:
+- `"RAW"` = Raw bytes only (ESC/POS commands) - no GDI support
+- `NULL` = EMF mode (default) - full GDI graphics support ✅
+- `"EMF"` = Explicit EMF mode (same as NULL)
+- `"TEXT"` = Plain text mode
 
 ## Testing
 
