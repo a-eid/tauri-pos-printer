@@ -203,7 +203,6 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
 // Print receipt by rendering HTML to image and sending as bitmap
 #[tauri::command]
 async fn print_receipt_image(printer_name: String, image_data_url: String) -> Result<String, String> {
-    use image::{ImageBuffer, Luma, DynamicImage};
     use base64::{Engine as _, engine::general_purpose};
     
     // Extract base64 data from data URL (format: "data:image/png;base64,...")
@@ -285,7 +284,7 @@ async fn print_receipt_image(printer_name: String, image_data_url: String) -> Re
 }
 
 // Helper: Apply Floyd-Steinberg dithering for better image quality
-fn apply_dithering(img: &ImageBuffer<Luma<u8>, Vec<u8>>) -> ImageBuffer<Luma<u8>, Vec<u8>> {
+fn apply_dithering(img: &image::ImageBuffer<image::Luma<u8>, Vec<u8>>) -> image::ImageBuffer<image::Luma<u8>, Vec<u8>> {
     let (width, height) = img.dimensions();
     let mut result = img.clone();
     
@@ -293,25 +292,25 @@ fn apply_dithering(img: &ImageBuffer<Luma<u8>, Vec<u8>>) -> ImageBuffer<Luma<u8>
         for x in 0..width {
             let old_pixel = result.get_pixel(x, y)[0] as i16;
             let new_pixel = if old_pixel > 128 { 255 } else { 0 };
-            result.put_pixel(x, y, Luma([new_pixel as u8]));
+            result.put_pixel(x, y, image::Luma([new_pixel as u8]));
             
             let error = old_pixel - new_pixel;
             
             // Distribute error to neighboring pixels
             if x + 1 < width {
                 let p = result.get_pixel(x + 1, y)[0] as i16;
-                result.put_pixel(x + 1, y, Luma([(p + error * 7 / 16).clamp(0, 255) as u8]));
+                result.put_pixel(x + 1, y, image::Luma([(p + error * 7 / 16).clamp(0, 255) as u8]));
             }
             if y + 1 < height {
                 if x > 0 {
                     let p = result.get_pixel(x - 1, y + 1)[0] as i16;
-                    result.put_pixel(x - 1, y + 1, Luma([(p + error * 3 / 16).clamp(0, 255) as u8]));
+                    result.put_pixel(x - 1, y + 1, image::Luma([(p + error * 3 / 16).clamp(0, 255) as u8]));
                 }
                 let p = result.get_pixel(x, y + 1)[0] as i16;
-                result.put_pixel(x, y + 1, Luma([(p + error * 5 / 16).clamp(0, 255) as u8]));
+                result.put_pixel(x, y + 1, image::Luma([(p + error * 5 / 16).clamp(0, 255) as u8]));
                 if x + 1 < width {
                     let p = result.get_pixel(x + 1, y + 1)[0] as i16;
-                    result.put_pixel(x + 1, y + 1, Luma([(p + error * 1 / 16).clamp(0, 255) as u8]));
+                    result.put_pixel(x + 1, y + 1, image::Luma([(p + error * 1 / 16).clamp(0, 255) as u8]));
                 }
             }
         }
@@ -425,8 +424,6 @@ fn print_raw_bytes(printer_name: &str, data: &[u8]) -> Result<(), String> {
 // This uses Windows GDI to render Arabic text properly - same as Electron!
 #[tauri::command]
 async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Result<String, String> {
-    use tauri::Manager;
-    
     // Generate unique label to avoid conflicts
     let label = format!("print-receipt-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
     
