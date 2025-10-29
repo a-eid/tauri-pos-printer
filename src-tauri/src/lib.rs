@@ -237,11 +237,231 @@ async fn print_receipt_html(app: tauri::AppHandle, printer_name: String) -> Resu
     Ok("Print dialog opened! Select NCR 7197 and click Print. (Tip: Set it as default printer for faster printing)".to_string())
 }
 
+// TRULY SILENT printing using Windows GDI directly (no dialogs!)
+#[tauri::command]
+fn print_receipt_silent(printer_name: String) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::{HANDLE, RECT, BOOL};
+        use windows::Win32::Graphics::Gdi::*;
+        use windows::Win32::Graphics::Printing::*;
+        use windows::core::PWSTR;
+        use std::ptr;
+        
+        unsafe {
+            // Open printer
+            let printer_name_wide: Vec<u16> = printer_name.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut h_printer: HANDLE = HANDLE::default();
+            
+            let result = OpenPrinterW(
+                PWSTR(printer_name_wide.as_ptr() as *mut u16),
+                &mut h_printer,
+                None,
+            );
+            
+            if result.is_err() {
+                return Err(format!("Failed to open printer: {}", printer_name));
+            }
+            
+            // Get printer DC (Device Context)
+            let h_dc = CreateDCW(
+                None,
+                PWSTR(printer_name_wide.as_ptr() as *mut u16),
+                None,
+                None,
+            );
+            
+            if h_dc.is_invalid() {
+                let _ = ClosePrinter(h_printer);
+                return Err("Failed to create printer device context".to_string());
+            }
+            
+            // Start document
+            let mut doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
+            let doc_info = DOCINFOW {
+                cbSize: std::mem::size_of::<DOCINFOW>() as i32,
+                lpszDocName: PWSTR(doc_name.as_mut_ptr()),
+                lpszOutput: PWSTR(ptr::null_mut()),
+                lpszDatatype: PWSTR(ptr::null_mut()),
+                fwType: 0,
+            };
+            
+            if StartDocW(h_dc, &doc_info) <= 0 {
+                let _ = DeleteDC(h_dc);
+                let _ = ClosePrinter(h_printer);
+                return Err("Failed to start document".to_string());
+            }
+            
+            // Start page
+            if StartPage(h_dc) <= 0 {
+                let _ = EndDoc(h_dc);
+                let _ = DeleteDC(h_dc);
+                let _ = ClosePrinter(h_printer);
+                return Err("Failed to start page".to_string());
+            }
+            
+            // Set up font for Arabic text
+            // Using Tahoma which has excellent Arabic support
+            let font_name: Vec<u16> = "Tahoma\0".encode_utf16().collect();
+            let h_font = CreateFontW(
+                -MulDiv(14, GetDeviceCaps(h_dc, LOGPIXELSY), 72), // 14pt font
+                0,
+                0,
+                0,
+                FW_NORMAL.0 as i32,
+                0,
+                0,
+                0,
+                ARABIC_CHARSET.0 as u32,
+                OUT_DEFAULT_PRECIS.0 as u32,
+                CLIP_DEFAULT_PRECIS.0 as u32,
+                DEFAULT_QUALITY.0 as u32,
+                (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
+                PWSTR(font_name.as_ptr() as *mut u16),
+            );
+            
+            let old_font = SelectObject(h_dc, h_font);
+            
+            // Set text alignment for RTL
+            SetTextAlign(h_dc, TA_RIGHT | TA_RTLREADING);
+            SetBkMode(h_dc, TRANSPARENT);
+            
+            // Get page dimensions
+            let page_width = GetDeviceCaps(h_dc, HORZRES);
+            let page_height = GetDeviceCaps(h_dc, VERTRES);
+            let margin_x = page_width / 10; // 10% margins
+            let mut y_pos = 100; // Start position
+            let line_height = 60; // Space between lines
+            
+            // Helper function to print centered text
+            let print_centered_text = |dc: HDC, text: &str, y: i32| {
+                let text_wide: Vec<u16> = text.encode_utf16().collect();
+                let mut rect = RECT {
+                    left: margin_x,
+                    top: y,
+                    right: page_width - margin_x,
+                    bottom: y + line_height,
+                };
+                DrawTextW(
+                    dc,
+                    &text_wide,
+                    &mut rect,
+                    DT_CENTER | DT_RTLREADING,
+                );
+            };
+            
+            // Print receipt content
+            // Store name
+            print_centered_text(h_dc, "متجر عينة", y_pos);
+            y_pos += line_height;
+            
+            // Address
+            print_centered_text(h_dc, "123 شارع الرئيسي", y_pos);
+            y_pos += line_height;
+            
+            print_centered_text(h_dc, "المدينة، المحافظة 12345", y_pos);
+            y_pos += line_height;
+            
+            print_centered_text(h_dc, "هاتف: (555) 123-4567", y_pos);
+            y_pos += line_height + 20;
+            
+            // Divider
+            print_centered_text(h_dc, "================================", y_pos);
+            y_pos += line_height;
+            
+            // Items header
+            print_centered_text(h_dc, "الأصناف", y_pos);
+            y_pos += line_height;
+            
+            print_centered_text(h_dc, "================================", y_pos);
+            y_pos += line_height + 10;
+            
+            // Items
+            print_centered_text(h_dc, "تفاح", y_pos);
+            y_pos += line_height - 20;
+            print_centered_text(h_dc, "2x @ 2.50 ج.م = 5.00 ج.م", y_pos);
+            y_pos += line_height + 10;
+            
+            print_centered_text(h_dc, "موز", y_pos);
+            y_pos += line_height - 20;
+            print_centered_text(h_dc, "3x @ 1.50 ج.م = 4.50 ج.م", y_pos);
+            y_pos += line_height + 10;
+            
+            print_centered_text(h_dc, "برتقال", y_pos);
+            y_pos += line_height - 20;
+            print_centered_text(h_dc, "1x @ 3.00 ج.م = 3.00 ج.م", y_pos);
+            y_pos += line_height + 20;
+            
+            // Divider
+            print_centered_text(h_dc, "================================", y_pos);
+            y_pos += line_height;
+            
+            // Totals
+            print_centered_text(h_dc, "المجموع الفرعي: 7.00 ج.م", y_pos);
+            y_pos += line_height;
+            
+            print_centered_text(h_dc, "الضريبة (10٪): 0.70 ج.م", y_pos);
+            y_pos += line_height;
+            
+            print_centered_text(h_dc, "================================", y_pos);
+            y_pos += line_height;
+            
+            // Total (bold - increase font size)
+            let h_font_bold = CreateFontW(
+                -MulDiv(18, GetDeviceCaps(h_dc, LOGPIXELSY), 72),
+                0, 0, 0,
+                FW_BOLD.0 as i32,
+                0, 0, 0,
+                ARABIC_CHARSET.0 as u32,
+                OUT_DEFAULT_PRECIS.0 as u32,
+                CLIP_DEFAULT_PRECIS.0 as u32,
+                DEFAULT_QUALITY.0 as u32,
+                (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
+                PWSTR(font_name.as_ptr() as *mut u16),
+            );
+            SelectObject(h_dc, h_font_bold);
+            
+            print_centered_text(h_dc, "الإجمالي: 7.70 ج.م", y_pos);
+            y_pos += line_height + 20;
+            
+            // Back to normal font
+            SelectObject(h_dc, h_font);
+            
+            print_centered_text(h_dc, "================================", y_pos);
+            y_pos += line_height + 10;
+            
+            // Footer
+            print_centered_text(h_dc, "شكراً لك على الشراء!", y_pos);
+            y_pos += line_height;
+            
+            print_centered_text(h_dc, "نتمنى رؤيتك مرة أخرى", y_pos);
+            
+            // Cleanup
+            SelectObject(h_dc, old_font);
+            let _ = DeleteObject(h_font);
+            let _ = DeleteObject(h_font_bold);
+            
+            // End page and document
+            let _ = EndPage(h_dc);
+            let _ = EndDoc(h_dc);
+            let _ = DeleteDC(h_dc);
+            let _ = ClosePrinter(h_printer);
+        }
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Err("Silent printing is only supported on Windows".to_string());
+    }
+    
+    Ok("Receipt printed silently! ✅ No dialogs, perfect Arabic!".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt, print_receipt_html])
+        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt, print_receipt_html, print_receipt_silent])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
