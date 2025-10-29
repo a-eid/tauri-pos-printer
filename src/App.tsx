@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import html2canvas from "html2canvas";
 import "./App.css";
 
 interface PrinterInfo {
@@ -100,6 +101,91 @@ function App() {
 		}
 	}
 
+	const printReceiptAsImage = async () => {
+		if (!selectedPrinter) {
+			setMessage("Please select a printer first");
+			return;
+		}
+
+		try {
+			setLoading(true);
+			setMessage("Rendering receipt...");
+
+			// Create a temporary div with the receipt HTML
+			const container = document.createElement("div");
+			container.style.cssText = `
+				position: fixed;
+				left: -9999px;
+				top: 0;
+				width: 576px;
+				background: white;
+				padding: 20px;
+				font-family: 'Arial', 'Tahoma', sans-serif;
+				direction: rtl;
+				text-align: center;
+			`;
+			
+			container.innerHTML = `
+				<div style="font-size: 24px; font-weight: bold; margin: 10px 0;">متجر عينة</div>
+				<div style="font-size: 14px; margin: 5px 0;">123 شارع الرئيسي</div>
+				<div style="font-size: 14px; margin: 5px 0;">المدينة، المحافظة 12345</div>
+				<div style="font-size: 14px; margin: 5px 0;">هاتف: (555) 123-4567</div>
+				<div style="margin: 15px 0; border-top: 2px dashed #000;"></div>
+				<div style="font-size: 16px; font-weight: bold; margin: 10px 0;">الأصناف</div>
+				<div style="margin: 10px 0; border-top: 2px dashed #000;"></div>
+				
+				<div style="text-align: right; font-size: 16px; font-weight: bold; margin: 8px 0;">تفاح</div>
+				<div style="text-align: center; font-size: 14px; margin: 5px 0;">2x @ 2.50 ج.م = 5.00 ج.م</div>
+				
+				<div style="text-align: right; font-size: 16px; font-weight: bold; margin: 8px 0;">موز</div>
+				<div style="text-align: center; font-size: 14px; margin: 5px 0;">3x @ 1.50 ج.م = 4.50 ج.م</div>
+				
+				<div style="text-align: right; font-size: 16px; font-weight: bold; margin: 8px 0;">برتقال</div>
+				<div style="text-align: center; font-size: 14px; margin: 5px 0;">1x @ 3.00 ج.م = 3.00 ج.م</div>
+				
+				<div style="margin: 15px 0; border-top: 2px dashed #000;"></div>
+				<div style="text-align: right; font-size: 14px; margin: 5px 0;">المجموع الفرعي: 7.00 ج.م</div>
+				<div style="text-align: right; font-size: 14px; margin: 5px 0;">الضريبة (10٪): 0.70 ج.م</div>
+				<div style="margin: 10px 0; border-top: 2px dashed #000;"></div>
+				<div style="text-align: right; font-size: 20px; font-weight: bold; margin: 10px 0;">الإجمالي: 7.70 ج.م</div>
+				<div style="margin: 15px 0; border-top: 2px dashed #000;"></div>
+				<div style="font-size: 16px; font-weight: bold; margin: 10px 0;">شكراً لك على الشراء!</div>
+				<div style="font-size: 14px; margin: 5px 0;">نتمنى رؤيتك مرة أخرى</div>
+			`;
+			
+			document.body.appendChild(container);
+
+			setMessage("Capturing as image...");
+
+			// Render to canvas
+			const canvas = await html2canvas(container, {
+				backgroundColor: "#ffffff",
+				scale: 2, // Higher quality
+				logging: false,
+			});
+
+			// Convert to base64 PNG
+			const imageDataUrl = canvas.toDataURL("image/png");
+
+			// Remove temporary container
+			document.body.removeChild(container);
+
+			setMessage("Sending to printer...");
+
+			// Send to printer
+			const result = await invoke<string>("print_receipt_image", {
+				printerName: selectedPrinter,
+				imageDataUrl,
+			});
+
+			setMessage(result);
+		} catch (error) {
+			setMessage(`Error printing: ${error}`);
+		} finally {
+			setLoading(false);
+		}
+	}
+
 	return (
 		<main className="container">
 			<h1>Thermal POS Printer</h1>
@@ -137,11 +223,11 @@ function App() {
 
 			<button
 				type="button"
-				onClick={printReceiptSilent}
+				onClick={printReceiptAsImage}
 				disabled={loading || !selectedPrinter}
 				className="print-btn primary"
 			>
-				{loading ? "Printing..." : "🚀 Print Arabic (Silent)"}
+				{loading ? "Processing..." : "🖨️ Print Arabic Receipt"}
 			</button>
 
 			<div className="secondary-buttons">
@@ -150,6 +236,7 @@ function App() {
 					onClick={printReceipt}
 					disabled={loading || !selectedPrinter}
 					className="print-btn-small secondary"
+					title="English only, no Arabic support"
 				>
 					{loading ? "..." : "📄 ESC/POS"}
 				</button>
@@ -159,8 +246,19 @@ function App() {
 					onClick={printReceiptHTML}
 					disabled={loading || !selectedPrinter}
 					className="print-btn-small secondary"
+					title="Show print dialog"
 				>
-					{loading ? "..." : "🖨️ With Dialog"}
+					{loading ? "..." : "🖨️ Dialog"}
+				</button>
+
+				<button
+					type="button"
+					onClick={printReceiptSilent}
+					disabled={loading || !selectedPrinter}
+					className="print-btn-small secondary"
+					title="GDI mode (may not work on all printers)"
+				>
+					{loading ? "..." : "🔧 GDI"}
 				</button>
 			</div>
 

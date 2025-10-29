@@ -200,6 +200,227 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
     Ok("Receipt printed! ✓ English ✓ Cut ✓ Padding | If Arabic is gibberish, we'll use HTML printing next.".to_string())
 }
 
+// Print receipt by rendering HTML to image and sending as bitmap
+#[tauri::command]
+async fn print_receipt_image(printer_name: String, image_data_url: String) -> Result<String, String> {
+    use image::{ImageBuffer, Luma, DynamicImage};
+    use base64::{Engine as _, engine::general_purpose};
+    
+    // Extract base64 data from data URL (format: "data:image/png;base64,...")
+    let base64_data = image_data_url
+        .strip_prefix("data:image/png;base64,")
+        .ok_or("Invalid image data URL format")?;
+    
+    // Decode base64 to bytes
+    let image_bytes = general_purpose::STANDARD.decode(base64_data)
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+    
+    // Load image
+    let img = image::load_from_memory(&image_bytes)
+        .map_err(|e| format!("Failed to load image: {}", e))?;
+    
+    // Convert to grayscale and resize to fit thermal printer width (576px for 80mm)
+    let img = img.resize(576, u32::MAX, image::imageops::FilterType::Lanczos3);
+    let gray_img = img.to_luma8();
+    
+    // Convert to 1-bit monochrome using dithering
+    let (width, height) = gray_img.dimensions();
+    let monochrome = apply_dithering(&gray_img);
+    
+    // Pack pixels into bytes (8 pixels per byte, MSB first)
+    let bytes_per_line = (width + 7) / 8;
+    let mut packed_data: Vec<u8> = Vec::new();
+    
+    for y in 0..height {
+        let mut line_bytes = vec![0u8; bytes_per_line as usize];
+        for x in 0..width {
+            let pixel = monochrome.get_pixel(x, y)[0];
+            if pixel > 128 {
+                // White pixel = 0 (no print)
+                // Already 0
+            } else {
+                // Black pixel = 1 (print)
+                let byte_index = (x / 8) as usize;
+                let bit_index = 7 - (x % 8);
+                line_bytes[byte_index] |= 1 << bit_index;
+            }
+        }
+        packed_data.extend_from_slice(&line_bytes);
+    }
+    
+    // Build ESC/POS commands
+    let mut commands: Vec<u8> = Vec::new();
+    
+    // Initialize printer
+    commands.extend_from_slice(&[0x1B, 0x40]); // ESC @
+    
+    // Center alignment
+    commands.extend_from_slice(&[0x1B, 0x61, 0x01]); // ESC a 1
+    
+    // GS v 0: Print raster bitmap
+    // Format: GS v 0 m xL xH yL yH [data]
+    commands.extend_from_slice(&[0x1D, 0x76, 0x30, 0x00]); // GS v 0 0 (normal mode)
+    
+    // Width in bytes (little endian)
+    let width_bytes = bytes_per_line as u16;
+    commands.push((width_bytes & 0xFF) as u8);
+    commands.push(((width_bytes >> 8) & 0xFF) as u8);
+    
+    // Height in pixels (little endian)
+    let height_u16 = height as u16;
+    commands.push((height_u16 & 0xFF) as u8);
+    commands.push(((height_u16 >> 8) & 0xFF) as u8);
+    
+    // Image data
+    commands.extend_from_slice(&packed_data);
+    
+    // Feed paper and cut
+    commands.extend_from_slice(&[0x0A, 0x0A, 0x0A, 0x0A]); // 4 line feeds
+    commands.extend_from_slice(&[0x1D, 0x56, 0x00]); // GS V 0 (cut)
+    
+    // Print using platform-specific method
+    print_raw_bytes(&printer_name, &commands)?;
+    
+    Ok(format!("✅ Receipt image printed! ({} x {} px)", width, height))
+}
+
+// Helper: Apply Floyd-Steinberg dithering for better image quality
+fn apply_dithering(img: &ImageBuffer<Luma<u8>, Vec<u8>>) -> ImageBuffer<Luma<u8>, Vec<u8>> {
+    let (width, height) = img.dimensions();
+    let mut result = img.clone();
+    
+    for y in 0..height {
+        for x in 0..width {
+            let old_pixel = result.get_pixel(x, y)[0] as i16;
+            let new_pixel = if old_pixel > 128 { 255 } else { 0 };
+            result.put_pixel(x, y, Luma([new_pixel as u8]));
+            
+            let error = old_pixel - new_pixel;
+            
+            // Distribute error to neighboring pixels
+            if x + 1 < width {
+                let p = result.get_pixel(x + 1, y)[0] as i16;
+                result.put_pixel(x + 1, y, Luma([(p + error * 7 / 16).clamp(0, 255) as u8]));
+            }
+            if y + 1 < height {
+                if x > 0 {
+                    let p = result.get_pixel(x - 1, y + 1)[0] as i16;
+                    result.put_pixel(x - 1, y + 1, Luma([(p + error * 3 / 16).clamp(0, 255) as u8]));
+                }
+                let p = result.get_pixel(x, y + 1)[0] as i16;
+                result.put_pixel(x, y + 1, Luma([(p + error * 5 / 16).clamp(0, 255) as u8]));
+                if x + 1 < width {
+                    let p = result.get_pixel(x + 1, y + 1)[0] as i16;
+                    result.put_pixel(x + 1, y + 1, Luma([(p + error * 1 / 16).clamp(0, 255) as u8]));
+                }
+            }
+        }
+    }
+    
+    result
+}
+
+// Helper: Print raw bytes to printer
+fn print_raw_bytes(printer_name: &str, data: &[u8]) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Graphics::Printing::{
+            OpenPrinterW, ClosePrinter, StartDocPrinterW, EndDocPrinter,
+            StartPagePrinter, EndPagePrinter, WritePrinter, DOC_INFO_1W,
+        };
+        use windows::core::PWSTR;
+        use std::ptr;
+        
+        unsafe {
+            let printer_name_wide: Vec<u16> = printer_name.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut h_printer: HANDLE = HANDLE::default();
+            
+            let result = OpenPrinterW(
+                PWSTR(printer_name_wide.as_ptr() as *mut u16),
+                &mut h_printer,
+                None,
+            );
+            
+            if result.is_err() {
+                return Err(format!("Failed to open printer: {}", printer_name));
+            }
+            
+            // Start document in RAW mode
+            let mut doc_name: Vec<u16> = "Receipt Image\0".encode_utf16().collect();
+            let mut datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
+            
+            let doc_info = DOC_INFO_1W {
+                pDocName: PWSTR(doc_name.as_mut_ptr()),
+                pOutputFile: PWSTR(ptr::null_mut()),
+                pDatatype: PWSTR(datatype.as_mut_ptr()),
+            };
+            
+            let job_id = StartDocPrinterW(h_printer, 1, &doc_info);
+            if job_id == 0 {
+                let _ = ClosePrinter(h_printer);
+                return Err("Failed to start document".to_string());
+            }
+            
+            let page_result = StartPagePrinter(h_printer);
+            if !page_result.as_bool() {
+                let _ = EndDocPrinter(h_printer);
+                let _ = ClosePrinter(h_printer);
+                return Err("Failed to start page".to_string());
+            }
+            
+            // Write raw data
+            let mut bytes_written: u32 = 0;
+            let write_result = WritePrinter(
+                h_printer,
+                data.as_ptr() as *const _,
+                data.len() as u32,
+                &mut bytes_written,
+            );
+            
+            if !write_result.as_bool() {
+                let _ = EndPagePrinter(h_printer);
+                let _ = EndDocPrinter(h_printer);
+                let _ = ClosePrinter(h_printer);
+                return Err("Failed to write to printer".to_string());
+            }
+            
+            let _ = EndPagePrinter(h_printer);
+            let _ = EndDocPrinter(h_printer);
+            let _ = ClosePrinter(h_printer);
+        }
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::process::Command;
+        use std::io::Write;
+        
+        let mut child = Command::new("lpr")
+            .arg("-P")
+            .arg(printer_name)
+            .arg("-o")
+            .arg("raw")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn lpr: {}", e))?;
+        
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(data)
+                .map_err(|e| format!("Failed to write to lpr: {}", e))?;
+        }
+        
+        let status = child.wait()
+            .map_err(|e| format!("Failed to wait for lpr: {}", e))?;
+        
+        if !status.success() {
+            return Err("lpr command failed".to_string());
+        }
+    }
+    
+    Ok(())
+}
+
 // Print receipt using HTML rendering (for Arabic support)
 // This uses Windows GDI to render Arabic text properly - same as Electron!
 #[tauri::command]
@@ -491,7 +712,7 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt, print_receipt_html, print_receipt_silent])
+        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt, print_receipt_image, print_receipt_html, print_receipt_silent])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
