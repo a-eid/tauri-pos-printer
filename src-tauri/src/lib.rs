@@ -38,6 +38,13 @@ fn get_thermal_printers() -> Result<Vec<PrinterInfo>, String> {
     Ok(thermal_printers)
 }
 
+// Helper: Encode UTF-8 string to Windows-1256 bytes for NCR printer
+fn encode_windows_1256(text: &str) -> Vec<u8> {
+    use encoding_rs::WINDOWS_1256;
+    let (encoded, _, _) = WINDOWS_1256.encode(text);
+    encoded.to_vec()
+}
+
 // Generate plain text receipt (let Windows printer driver handle rendering)
 fn generate_text_receipt() -> String {
     let mut receipt = String::new();
@@ -77,63 +84,63 @@ fn generate_text_receipt() -> String {
 
 #[tauri::command]
 fn print_receipt(printer_name: String) -> Result<String, String> {
-    // For now: Simple test with ASCII to verify cutting works
-    // Then we'll tackle Arabic separately
     let mut commands = Vec::new();
     
-    // ESC @ - Initialize
+    // ESC @ - Initialize printer
     commands.extend_from_slice(&[0x1B, 0x40]);
+    
+    // 🔑 KEY STEP 1: Set Code Page 1256 (Arabic/Windows-1256)
+    // ESC t 28
+    commands.extend_from_slice(&[0x1B, 0x74, 28]);
+    
+    // 🔑 KEY STEP 2: Enable Special Font Mode 5 (Fixed Pitch Contextual 1256)
+    // FS C n (0x1C 0x43 n) where n=5 for Mode 5
+    commands.extend_from_slice(&[0x1C, 0x43, 5]);
     
     // Center align
     commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
     
-    // Receipt with both English and Arabic (to test if Arabic works)
     commands.extend_from_slice(b"\n");
     
-    // Store name - English + Arabic
-    commands.extend_from_slice("     SAMPLE STORE\n".as_bytes());
-    commands.extend_from_slice("        متجر عينة\n\n".as_bytes());
-    
-    commands.extend_from_slice("   123 Main Street\n".as_bytes());
-    commands.extend_from_slice("    123 شارع الرئيسي\n".as_bytes());
+    // Now encode Arabic text in Windows-1256
+    commands.extend_from_slice(encode_windows_1256("متجر عينة").as_slice());
+    commands.extend_from_slice(b"\n");
+    commands.extend_from_slice(encode_windows_1256("123 شارع الرئيسي").as_slice());
+    commands.extend_from_slice(b"\n\n");
     
     commands.extend_from_slice(b"================================\n");
-    
-    // Items header
-    commands.extend_from_slice("       ITEMS / الأصناف\n".as_bytes());
+    commands.extend_from_slice(encode_windows_1256("الأصناف").as_slice());
+    commands.extend_from_slice(b"\n");
     commands.extend_from_slice(b"================================\n\n");
     
     // Items with Arabic names
-    commands.extend_from_slice("Apple / تفاح\n".as_bytes());
-    commands.extend_from_slice(b"  2x @ 2.50 EGP = 5.00 EGP\n\n");
+    commands.extend_from_slice(encode_windows_1256("تفاح").as_slice());
+    commands.extend_from_slice(b"\n  2x @ 2.50 EGP = 5.00 EGP\n\n");
     
-    commands.extend_from_slice("Banana / موز\n".as_bytes());
-    commands.extend_from_slice(b"  3x @ 1.50 EGP = 4.50 EGP\n\n");
+    commands.extend_from_slice(encode_windows_1256("موز").as_slice());
+    commands.extend_from_slice(b"\n  3x @ 1.50 EGP = 4.50 EGP\n\n");
     
-    commands.extend_from_slice("Orange / برتقال\n".as_bytes());
-    commands.extend_from_slice(b"  1x @ 3.00 EGP = 3.00 EGP\n\n");
+    commands.extend_from_slice(encode_windows_1256("برتقال").as_slice());
+    commands.extend_from_slice(b"\n  1x @ 3.00 EGP = 3.00 EGP\n\n");
     
     commands.extend_from_slice(b"================================\n");
     
     // Totals
-    commands.extend_from_slice("Subtotal / المجموع الفرعي\n".as_bytes());
-    commands.extend_from_slice(b"                     7.00 EGP\n");
+    commands.extend_from_slice(encode_windows_1256("المجموع الفرعي: 7.00 ج.م").as_slice());
+    commands.extend_from_slice(b"\n");
     
-    commands.extend_from_slice("Tax (10%) / الضريبة\n".as_bytes());
-    commands.extend_from_slice(b"                     0.70 EGP\n");
+    commands.extend_from_slice(encode_windows_1256("الضريبة (10٪): 0.70 ج.م").as_slice());
+    commands.extend_from_slice(b"\n");
     
     commands.extend_from_slice(b"================================\n");
     
-    commands.extend_from_slice("TOTAL / الإجمالي\n".as_bytes());
-    commands.extend_from_slice(b"                     7.70 EGP\n");
-    
-    commands.extend_from_slice(b"================================\n\n");
+    commands.extend_from_slice(encode_windows_1256("الإجمالي: 7.70 ج.م").as_slice());
+    commands.extend_from_slice(b"\n================================\n\n");
     
     // Footer
-    commands.extend_from_slice("   Thank you!\n".as_bytes());
-    commands.extend_from_slice("    شكراً لك!\n".as_bytes());
-    
-    // INCREASED bottom padding (from 4 to 8 line feeds)
+    commands.extend_from_slice(encode_windows_1256("شكراً لك على الشراء!").as_slice());
+    commands.extend_from_slice(b"\n");
+    commands.extend_from_slice(encode_windows_1256("نتمنى رؤيتك مرة أخرى").as_slice());
     commands.extend_from_slice(b"\n\n\n\n\n\n\n\n");
     
     // Paper cut
@@ -197,7 +204,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
         }
     }
     
-    Ok("Receipt printed! ✓ English ✓ Cut ✓ Padding | If Arabic is gibberish, we'll use HTML printing next.".to_string())
+    Ok("✅ Receipt printed with NCR Arabic support! (Code Page 1256 + Contextual Mode 5)".to_string())
 }
 
 // Print receipt by rendering HTML to image and sending as bitmap

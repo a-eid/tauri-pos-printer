@@ -243,7 +243,7 @@ function App() {
 
 			<button
 				type="button"
-				onClick={printReceiptTextMode}
+				onClick={printReceipt}
 				disabled={loading || !selectedPrinter}
 				className="print-btn primary"
 			>
@@ -251,7 +251,7 @@ function App() {
 			</button>
 
 			<p style={{ fontSize: "12px", color: "#666", margin: "10px 0" }}>
-				⚡ TEXT mode: Windows driver handles Arabic rendering. Zero dialogs!
+				✅ NCR 7197 Mode: Code Page 1256 + Contextual Font Mode 5. Zero dialogs!
 			</p>
 
 			<details style={{ marginTop: "20px" }}>
@@ -271,12 +271,12 @@ function App() {
 
 					<button
 						type="button"
-						onClick={printReceipt}
+						onClick={printReceiptTextMode}
 						disabled={loading || !selectedPrinter}
 						className="print-btn-small secondary"
-						title="Works but Arabic shows as gibberish"
+						title="TEXT mode - relies on Windows driver"
 					>
-						{loading ? "..." : "📄 RAW"}
+						{loading ? "..." : "📄 TEXT"}
 					</button>
 					
 					<button
