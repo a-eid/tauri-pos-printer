@@ -245,22 +245,36 @@ async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Res
 fn print_receipt_silent(printer_name: String) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Foundation::RECT;
+        use windows::Win32::Foundation::{HANDLE, RECT};
         use windows::Win32::Graphics::Gdi::{
-            CreateDCW, DeleteDC, StartDocW, EndDoc, StartPage, EndPage,
-            CreateFontW, SelectObject, DeleteObject,
+            CreateDCW, DeleteDC, CreateFontW, SelectObject, DeleteObject,
             SetTextAlign, SetBkMode, GetDeviceCaps, DrawTextW,
             HDC, HORZRES, VERTRES, LOGPIXELSY,
             FW_NORMAL, FW_BOLD, ARABIC_CHARSET, OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, FF_DONTCARE,
             TA_RIGHT, TA_RTLREADING, TRANSPARENT, DT_CENTER, DT_RTLREADING,
-            DOCINFOW,
+        };
+        use windows::Win32::Graphics::Printing::{
+            OpenPrinterW, ClosePrinter, StartDocPrinterW, EndDocPrinter,
+            StartPagePrinter, EndPagePrinter, DOC_INFO_1W,
         };
         use windows::core::PWSTR;
         use std::ptr;
         
         unsafe {
             let printer_name_wide: Vec<u16> = printer_name.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut h_printer: HANDLE = HANDLE::default();
+            
+            // Open printer
+            let result = OpenPrinterW(
+                PWSTR(printer_name_wide.as_ptr() as *mut u16),
+                &mut h_printer,
+                None,
+            );
+            
+            if result.is_err() {
+                return Err(format!("Failed to open printer: {}", printer_name));
+            }
             
             // Create GDI device context for the printer
             let h_dc = CreateDCW(
@@ -271,29 +285,32 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             );
             
             if h_dc.is_invalid() {
+                let _ = ClosePrinter(h_printer);
                 return Err("Failed to create printer device context".to_string());
             }
             
-            // Start GDI document (proper graphics mode, NOT RAW mode!)
+            // Start document with NULL datatype (allows GDI rendering!)
             let mut doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
             
-            let doc_info = DOCINFOW {
-                cbSize: std::mem::size_of::<DOCINFOW>() as i32,
-                lpszDocName: PWSTR(doc_name.as_mut_ptr()),
-                lpszOutput: PWSTR(ptr::null_mut()),
-                lpszDatatype: PWSTR(ptr::null_mut()),
-                fwType: 0,
+            let doc_info = DOC_INFO_1W {
+                pDocName: PWSTR(doc_name.as_mut_ptr()),
+                pOutputFile: PWSTR(ptr::null_mut()),
+                pDatatype: PWSTR(ptr::null_mut()), // NULL = EMF (GDI graphics mode)
             };
             
-            if StartDocW(h_dc, &doc_info) <= 0 {
+            let job_id = StartDocPrinterW(h_printer, 1, &doc_info);
+            if job_id == 0 {
                 let _ = DeleteDC(h_dc);
+                let _ = ClosePrinter(h_printer);
                 return Err("Failed to start document".to_string());
             }
             
-            // Start GDI page
-            if StartPage(h_dc) <= 0 {
-                let _ = EndDoc(h_dc);
+            // Start page
+            let page_result = StartPagePrinter(h_printer);
+            if !page_result.as_bool() {
+                let _ = EndDocPrinter(h_printer);
                 let _ = DeleteDC(h_dc);
+                let _ = ClosePrinter(h_printer);
                 return Err("Failed to start page".to_string());
             }
             
@@ -444,10 +461,11 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             let _ = DeleteObject(h_font);
             let _ = DeleteObject(h_font_bold);
             
-            // End GDI page and document (THIS ACTUALLY SENDS TO PRINTER!)
-            let _ = EndPage(h_dc);
-            let _ = EndDoc(h_dc);
+            // End page and document (EMF mode sends GDI graphics to printer!)
+            let _ = EndPagePrinter(h_printer);
+            let _ = EndDocPrinter(h_printer);
             let _ = DeleteDC(h_dc);
+            let _ = ClosePrinter(h_printer);
         }
     }
     
