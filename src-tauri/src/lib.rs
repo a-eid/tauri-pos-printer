@@ -218,16 +218,18 @@ async fn print_receipt_image(printer_name: String, image_data_url: String) -> Re
     let img = image::load_from_memory(&image_bytes)
         .map_err(|e| format!("Failed to load image: {}", e))?;
     
-    // Convert to grayscale and resize to fit thermal printer width (576px for 80mm)
-    let img = img.resize(576, u32::MAX, image::imageops::FilterType::Lanczos3);
+    // Resize for 80mm thermal printer at 203 DPI
+    // 576px width = 72mm print width (with margins) = perfect for 80mm paper
+    // Limit height to 800px maximum to prevent paper waste
+    let img = img.resize(576, 800, image::imageops::FilterType::Lanczos3);
     let gray_img = img.to_luma8();
     
     // Convert to 1-bit monochrome using dithering
     let (width, height) = gray_img.dimensions();
     
-    // SAFETY CHECK: Prevent excessive paper printing
-    if height > 2000 {
-        return Err(format!("❌ Image too large ({} pixels high). Maximum 2000px to prevent paper waste. Use HTML Dialog method instead.", height));
+    // STRICT SAFETY CHECK: Prevent excessive paper printing
+    if height > 800 {
+        return Err(format!("❌ Image too tall ({} pixels). Cropped to 800px to prevent paper waste.", height));
     }
     
     let monochrome = apply_dithering(&gray_img);
@@ -436,6 +438,7 @@ async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Res
     let label = format!("print-receipt-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
     
     // Create a small minimized window (user will only see print dialog)
+    
     let webview = tauri::WebviewWindowBuilder::new(
         &app,
         label.clone(),
@@ -466,6 +469,94 @@ async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Res
     });
     
     Ok("✅ Print dialog opened! Select NCR 7197 and click Print. (Window will auto-close)".to_string())
+}
+
+// Print plain text silently using Windows TEXT mode (not RAW!)
+// This lets Windows printer driver handle Arabic text rendering
+#[tauri::command]
+fn print_receipt_text_mode(printer_name: String) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Graphics::Printing::{
+            OpenPrinterW, ClosePrinter, StartDocPrinterW, EndDocPrinter,
+            StartPagePrinter, EndPagePrinter, WritePrinter, DOC_INFO_1W,
+        };
+        use windows::core::PWSTR;
+        use std::ptr;
+        
+        unsafe {
+            let printer_name_wide: Vec<u16> = printer_name.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut h_printer: HANDLE = HANDLE::default();
+            
+            let result = OpenPrinterW(
+                PWSTR(printer_name_wide.as_ptr() as *mut u16),
+                &mut h_printer,
+                None,
+            );
+            
+            if result.is_err() {
+                return Err(format!("Failed to open printer: {}", printer_name));
+            }
+            
+            // Use TEXT mode (not RAW!) - Windows handles encoding
+            let mut doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
+            let mut datatype: Vec<u16> = "TEXT\0".encode_utf16().collect();
+            
+            let doc_info = DOC_INFO_1W {
+                pDocName: PWSTR(doc_name.as_mut_ptr()),
+                pOutputFile: PWSTR(ptr::null_mut()),
+                pDatatype: PWSTR(datatype.as_mut_ptr()), // TEXT mode!
+            };
+            
+            let job_id = StartDocPrinterW(h_printer, 1, &doc_info);
+            if job_id == 0 {
+                let error = std::io::Error::last_os_error();
+                let _ = ClosePrinter(h_printer);
+                return Err(format!("Failed to start document: {}", error));
+            }
+            
+            let page_result = StartPagePrinter(h_printer);
+            if !page_result.as_bool() {
+                let error = std::io::Error::last_os_error();
+                let _ = EndDocPrinter(h_printer);
+                let _ = ClosePrinter(h_printer);
+                return Err(format!("Failed to start page: {}", error));
+            }
+            
+            // Plain UTF-8 text receipt
+            let receipt_text = generate_text_receipt();
+            let text_bytes = receipt_text.as_bytes();
+            
+            // Write text
+            let mut bytes_written: u32 = 0;
+            let write_result = WritePrinter(
+                h_printer,
+                text_bytes.as_ptr() as *const _,
+                text_bytes.len() as u32,
+                &mut bytes_written,
+            );
+            
+            if !write_result.as_bool() {
+                let error = std::io::Error::last_os_error();
+                let _ = EndPagePrinter(h_printer);
+                let _ = EndDocPrinter(h_printer);
+                let _ = ClosePrinter(h_printer);
+                return Err(format!("Failed to write: {}", error));
+            }
+            
+            let _ = EndPagePrinter(h_printer);
+            let _ = EndDocPrinter(h_printer);
+            let _ = ClosePrinter(h_printer);
+        }
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Err("Text mode printing only supported on Windows".to_string());
+    }
+    
+    Ok("✅ Receipt sent in TEXT mode! Check printer.".to_string())
 }
 
 // TRULY SILENT printing using Windows GDI directly (no dialogs!)
@@ -725,7 +816,7 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt, print_receipt_image, print_receipt_html, print_receipt_silent])
+        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt, print_receipt_image, print_receipt_html, print_receipt_text_mode, print_receipt_silent])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

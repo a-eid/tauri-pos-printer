@@ -101,6 +101,26 @@ function App() {
 		}
 	}
 
+	const printReceiptTextMode = async () => {
+		if (!selectedPrinter) {
+			setMessage("Please select a printer first");
+			return;
+		}
+
+		try {
+			setLoading(true);
+			setMessage("Printing silently (TEXT mode)...");
+			const result = await invoke<string>("print_receipt_text_mode", {
+				printerName: selectedPrinter,
+			});
+			setMessage(result);
+		} catch (error) {
+			setMessage(`Error printing: ${error}`);
+		} finally {
+			setLoading(false);
+		}
+	}
+
 	const printReceiptAsImage = async () => {
 		if (!selectedPrinter) {
 			setMessage("Please select a printer first");
@@ -223,22 +243,32 @@ function App() {
 
 			<button
 				type="button"
-				onClick={printReceiptHTML}
+				onClick={printReceiptTextMode}
 				disabled={loading || !selectedPrinter}
 				className="print-btn primary"
 			>
-				{loading ? "Opening..." : "🖨️ Print Arabic Receipt"}
+				{loading ? "Printing..." : "🚀 Print Arabic Receipt (Silent)"}
 			</button>
 
 			<p style={{ fontSize: "12px", color: "#666", margin: "10px 0" }}>
-				💡 Tip: Set NCR 7197 as your default printer for faster printing
+				⚡ TEXT mode: Windows driver handles Arabic rendering. Zero dialogs!
 			</p>
 
 			<details style={{ marginTop: "20px" }}>
 				<summary style={{ cursor: "pointer", fontSize: "14px", color: "#666" }}>
-					⚙️ Advanced Options (for testing)
+					⚙️ Alternative Methods (backup options)
 				</summary>
 				<div className="secondary-buttons" style={{ marginTop: "10px" }}>
+					<button
+						type="button"
+						onClick={printReceiptHTML}
+						disabled={loading || !selectedPrinter}
+						className="print-btn-small secondary"
+						title="Works perfectly but shows print dialog"
+					>
+						{loading ? "..." : "🖨️ Dialog"}
+					</button>
+
 					<button
 						type="button"
 						onClick={printReceipt}
@@ -246,7 +276,7 @@ function App() {
 						className="print-btn-small secondary"
 						title="Works but Arabic shows as gibberish"
 					>
-						{loading ? "..." : "📄 ESC/POS"}
+						{loading ? "..." : "📄 RAW"}
 					</button>
 					
 					<button
@@ -254,7 +284,7 @@ function App() {
 						onClick={printReceiptAsImage}
 						disabled={loading || !selectedPrinter}
 						className="print-btn-small secondary"
-						title="May print excessive paper on some printers"
+						title="⚠️ Prints 2 meters of paper on NCR 7197"
 					>
 						{loading ? "..." : "🖼️ Image"}
 					</button>
