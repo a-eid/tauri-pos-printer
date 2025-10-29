@@ -203,7 +203,7 @@ fn print_receipt(printer_name: String) -> Result<String, String> {
 // Print receipt using HTML rendering (for Arabic support)
 // This uses Windows GDI to render Arabic text properly - same as Electron!
 #[tauri::command]
-async fn print_receipt_html(app: tauri::AppHandle, printer_name: String) -> Result<String, String> {
+async fn print_receipt_html(app: tauri::AppHandle, _printer_name: String) -> Result<String, String> {
     use tauri::Manager;
     
     // Create a minimized, hidden webview window
@@ -242,9 +242,20 @@ async fn print_receipt_html(app: tauri::AppHandle, printer_name: String) -> Resu
 fn print_receipt_silent(printer_name: String) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Foundation::{HANDLE, RECT, BOOL};
-        use windows::Win32::Graphics::Gdi::*;
-        use windows::Win32::Graphics::Printing::*;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Graphics::Gdi::{
+            CreateDCW, DeleteDC, CreateFontW, SelectObject, DeleteObject,
+            SetTextAlign, SetBkMode, GetDeviceCaps, DrawTextW, MulDiv,
+            HDC, HGDIOBJ, HORZRES, VERTRES, LOGPIXELSY,
+            FW_NORMAL, FW_BOLD, ARABIC_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, FF_DONTCARE,
+            TA_RIGHT, TA_RTLREADING, TRANSPARENT, DT_CENTER, DT_RTLREADING,
+            RECT,
+        };
+        use windows::Win32::Graphics::Printing::{
+            OpenPrinterW, ClosePrinter, StartDocPrinterW, EndDocPrinter,
+            StartPagePrinter, EndPagePrinter, DOC_INFO_1W,
+        };
         use windows::core::PWSTR;
         use std::ptr;
         
@@ -276,25 +287,27 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
                 return Err("Failed to create printer device context".to_string());
             }
             
-            // Start document
+            // Start document using printer API (not GDI document API)
             let mut doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
-            let doc_info = DOCINFOW {
-                cbSize: std::mem::size_of::<DOCINFOW>() as i32,
-                lpszDocName: PWSTR(doc_name.as_mut_ptr()),
-                lpszOutput: PWSTR(ptr::null_mut()),
-                lpszDatatype: PWSTR(ptr::null_mut()),
-                fwType: 0,
+            let mut datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
+            
+            let doc_info = DOC_INFO_1W {
+                pDocName: PWSTR(doc_name.as_mut_ptr()),
+                pOutputFile: PWSTR(ptr::null_mut()),
+                pDatatype: PWSTR(datatype.as_mut_ptr()),
             };
             
-            if StartDocW(h_dc, &doc_info) <= 0 {
+            let job_id = StartDocPrinterW(h_printer, 1, &doc_info);
+            if job_id == 0 {
                 let _ = DeleteDC(h_dc);
                 let _ = ClosePrinter(h_printer);
                 return Err("Failed to start document".to_string());
             }
             
             // Start page
-            if StartPage(h_dc) <= 0 {
-                let _ = EndDoc(h_dc);
+            let page_result = StartPagePrinter(h_printer);
+            if !page_result.as_bool() {
+                let _ = EndDocPrinter(h_printer);
                 let _ = DeleteDC(h_dc);
                 let _ = ClosePrinter(h_printer);
                 return Err("Failed to start page".to_string());
@@ -442,8 +455,8 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             let _ = DeleteObject(h_font_bold);
             
             // End page and document
-            let _ = EndPage(h_dc);
-            let _ = EndDoc(h_dc);
+            let _ = EndPagePrinter(h_printer);
+            let _ = EndDocPrinter(h_printer);
             let _ = DeleteDC(h_dc);
             let _ = ClosePrinter(h_printer);
         }
