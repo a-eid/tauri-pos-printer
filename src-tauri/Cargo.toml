@@ -28,6 +28,7 @@ image = "0.25"
 base64 = "0.22"
 encoding_rs = "0.8"
 escpos = { version = "0.17.0", features = ["full"] }
+serialport = "4"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

@@ -15,6 +15,11 @@ function App() {
 	const [loading, setLoading] = useState<boolean>(false);
   const [escposHost, setEscposHost] = useState<string>("");
   const [escposPort, setEscposPort] = useState<number>(9100);
+	// Serial / COM
+	const [serialPort, setSerialPort] = useState<string>("");
+	const [serialBaud, setSerialBaud] = useState<number>(9600);
+	const [serialCodepage, setSerialCodepage] = useState<number>(28);
+	const [serialContextual, setSerialContextual] = useState<string>("5");
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: loadPrinters is not a dependency of this effect
 	useEffect(() => {
@@ -292,6 +297,45 @@ function App() {
 		}
 	};
 
+		const escposDemoFormatAr = async () => {
+			if (!escposHost || !escposPort) {
+				setMessage("Please enter printer IP/Host and port (default 9100).");
+				return;
+			}
+			try {
+				setLoading(true);
+				setMessage("Sending escpos demo (Arabic)...");
+				const result = await invoke<string>("escpos_demo_format_ar", {
+					host: escposHost,
+					port: escposPort,
+				});
+				setMessage(result);
+			} catch (error) {
+				setMessage(`Error (escpos demo): ${error}`);
+			} finally {
+				setLoading(false);
+			}
+		};
+
+			const escposSerialCustom = async () => {
+				try {
+					setLoading(true);
+					setMessage("Sending serial Arabic test...");
+					const contextualVal = serialContextual.trim() === "" ? null : Number(serialContextual);
+					const result = await invoke<string>("escpos_print_text_ar_custom_serial", {
+						port: serialPort || null, // allow env/autodetect fallback
+						baud: serialBaud || null,
+						codepage: serialCodepage,
+						contextual: contextualVal,
+					});
+					setMessage(result);
+				} catch (error) {
+					setMessage(`Error (serial custom): ${error}`);
+				} finally {
+					setLoading(false);
+				}
+			};
+
 	return (
 		<main className="container">
 			<h1>Thermal POS Printer</h1>
@@ -430,8 +474,61 @@ function App() {
 						title="Renders Arabic as PNG and prints via ESC/POS raster image">
 						{loading ? "..." : "🖼️ escpos Image"}
 					</button>
+							<button type="button" className="print-btn-small secondary" disabled={loading || !escposHost}
+								onClick={escposDemoFormatAr}
+								title="Runs formatting demo with Arabic strings">
+								{loading ? "..." : "🧪 escpos Demo (AR)"}
+							</button>
 				</div>
 			</div>
+
+					<div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #eee' }}>
+						<h2 style={{ fontSize: 18, margin: '0 0 8px' }}>ESC/POS (Serial / COM)</h2>
+						<p style={{ color: '#666', marginTop: 0, fontSize: 12 }}>
+							Printer connected via USB→COM (virtual serial). Provide COM and baud or leave empty to use env (ACC_PRINTER_COM/ACC_PRINTER_BAUD) or autodetect.
+						</p>
+						<div style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 120px 120px 120px', alignItems: 'center', marginBottom: 8 }}>
+							<input
+								type="text"
+								placeholder="COM port (e.g., COM6)"
+								value={serialPort}
+								onChange={(e) => setSerialPort(e.target.value)}
+								disabled={loading}
+								style={{ width: '100%' }}
+							/>
+							<input
+								type="number"
+								placeholder="Baud"
+								value={serialBaud}
+								onChange={(e) => setSerialBaud(Number(e.target.value))}
+								disabled={loading}
+								style={{ width: '100%' }}
+							/>
+							<input
+								type="number"
+								placeholder="Codepage (e.g., 28)"
+								value={serialCodepage}
+								onChange={(e) => setSerialCodepage(Number(e.target.value))}
+								disabled={loading}
+								style={{ width: '100%' }}
+							/>
+							<input
+								type="text"
+								placeholder="Contextual (e.g., 5 or empty)"
+								value={serialContextual}
+								onChange={(e) => setSerialContextual(e.target.value)}
+								disabled={loading}
+								style={{ width: '100%' }}
+							/>
+						</div>
+						<div className="secondary-buttons" style={{ display: 'flex', gap: 8 }}>
+							<button type="button" className="print-btn-small secondary" disabled={loading}
+								onClick={escposSerialCustom}
+								title="Send Windows-1256 Arabic sample over COM with codepage/contextual">
+								{loading ? "..." : "🔌 Serial Arabic (custom)"}
+							</button>
+						</div>
+					</div>
 		</main>
 	);
 }
