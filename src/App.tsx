@@ -30,6 +30,7 @@ function App() {
 	const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: ...
 	useEffect(() => {
 		loadReceiptData();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -134,15 +135,27 @@ function App() {
 
 		// Totals
 		ctx.font = "16px Arial, Tahoma, sans-serif";
-		ctx.fillText(`المجموع الفرعي: ${receiptData.totals.subtotal.toFixed(2)} ج.م`, rightX, y);
+		ctx.fillText(
+			`المجموع الفرعي: ${receiptData.totals.subtotal.toFixed(2)} ج.م`,
+			rightX,
+			y,
+		);
 		y += 25;
-		ctx.fillText(`الضريبة (10٪): ${receiptData.totals.tax.toFixed(2)} ج.م`, rightX, y);
+		ctx.fillText(
+			`الضريبة (10٪): ${receiptData.totals.tax.toFixed(2)} ج.م`,
+			rightX,
+			y,
+		);
 		y += 30;
 
 		drawDivider();
 
 		ctx.font = "bold 22px Arial, Tahoma, sans-serif";
-		ctx.fillText(`الإجمالي: ${receiptData.totals.total.toFixed(2)} ج.م`, rightX, y);
+		ctx.fillText(
+			`الإجمالي: ${receiptData.totals.total.toFixed(2)} ج.م`,
+			rightX,
+			y,
+		);
 		y += 35;
 
 		drawDivider();
@@ -229,7 +242,9 @@ function App() {
 			</p>
 
 			{message && (
-				<div className={`message ${message.includes("❌") ? "error" : "success"}`}>
+				<div
+					className={`message ${message.includes("❌") ? "error" : "success"}`}
+				>
 					{message}
 				</div>
 			)}
@@ -269,11 +284,23 @@ function App() {
 					</button>
 				</div>
 
-				<div style={{ marginTop: "20px", padding: "16px", background: "#f8f9fa", borderRadius: "8px", fontSize: "14px" }}>
+				<div
+					style={{
+						marginTop: "20px",
+						padding: "16px",
+						background: "#f8f9fa",
+						borderRadius: "8px",
+						fontSize: "14px",
+					}}
+				>
 					<strong>ℹ️ Environment Variables:</strong>
 					<ul style={{ marginTop: "8px", paddingLeft: "20px" }}>
-						<li><code>PRINTER_COM_PORT</code> - COM port (default: COM7)</li>
-						<li><code>PRINTER_BAUD_RATE</code> - Baud rate (default: 9600)</li>
+						<li>
+							<code>PRINTER_COM_PORT</code> - COM port (default: COM7)
+						</li>
+						<li>
+							<code>PRINTER_BAUD_RATE</code> - Baud rate (default: 9600)
+						</li>
 					</ul>
 				</div>
 			</section>

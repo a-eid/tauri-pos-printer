@@ -98,12 +98,14 @@ async fn print_receipt() -> Result<String, String> {
     let driver = SerialPortDriver::open(&port, baud, None)
         .map_err(|e| format!("Failed to open printer on {} @{}: {}", port, baud, e))?;
 
-    let printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()));
+    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()))
+        .debug_mode(Some(DebugMode::Hex));
+    
+    let printer = printer.init().map_err(|e| e.to_string())?;
     
     let mut cmd: Vec<u8> = Vec::new();
     
-    // Initialize and set codepage
-    cmd.extend_from_slice(&[0x1B, 0x40]); // ESC @ - Initialize
+    // Set codepage and contextual mode (no ESC @ - already initialized above)
     cmd.extend_from_slice(&[0x1B, 0x74, CODEPAGE_WIN1256]); // ESC t - Select code page
     cmd.extend_from_slice(&[0x1C, 0x43, CONTEXTUAL_MODE]); // FS C - Contextual mode
     
@@ -155,8 +157,7 @@ async fn print_receipt() -> Result<String, String> {
     
     // Send to printer
     let result: EscposResult<()> = printer
-        .init()
-        .and_then(|p| p.custom(&cmd))
+        .custom(&cmd)
         .and_then(|p| p.print())
         .map(|_| ());
     
