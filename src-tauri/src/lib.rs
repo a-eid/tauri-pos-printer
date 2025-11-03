@@ -29,217 +29,10 @@ fn get_thermal_printers() -> Result<Vec<PrinterInfo>, String> {
             let name_lower = p.name.to_lowercase();
             thermal_keywords.iter().any(|keyword| name_lower.contains(keyword))
         })
-        .map(|p| PrinterInfo {
-            name: p.name.clone(),
-            system_name: p.name.clone(),
-        })
-        .collect();
-    
-    Ok(thermal_printers)
-}
-
-// Helper: Encode UTF-8 string to Windows-1256 bytes for NCR printer
-fn encode_windows_1256(text: &str) -> Vec<u8> {
-    use encoding_rs::WINDOWS_1256;
-    let (encoded, _, _) = WINDOWS_1256.encode(text);
-    encoded.to_vec()
-}
-
-// Generate plain text receipt (let Windows printer driver handle rendering)
-fn generate_text_receipt() -> String {
-    let mut receipt = String::new();
-    
-    // Store name (will be rendered by Windows with proper Arabic fonts)
-    receipt.push_str("        متجر عينة\n");
-    receipt.push_str("    123 شارع الرئيسي\n");
-    receipt.push_str("  المدينة، المحافظة 12345\n");
-    receipt.push_str("  هاتف: (555) 123-4567\n\n");
-    
-    receipt.push_str("================================\n");
-    receipt.push_str("        الأصناف\n");
-    receipt.push_str("================================\n\n");
-    
-    // Items - RTL will be handled by Windows
-    receipt.push_str("تفاح\n");
-    receipt.push_str("  2x @ 2.50 ج.م = 5.00 ج.م\n\n");
-    
-    receipt.push_str("موز\n");
-    receipt.push_str("  3x @ 1.50 ج.م = 4.50 ج.م\n\n");
-    
-    receipt.push_str("برتقال\n");
-    receipt.push_str("  1x @ 3.00 ج.م = 3.00 ج.م\n\n");
-    
-    receipt.push_str("================================\n");
-    receipt.push_str("المجموع الفرعي:    7.00 ج.م\n");
-    receipt.push_str("الضريبة (10٪):     0.70 ج.م\n");
-    receipt.push_str("================================\n");
-    receipt.push_str("الإجمالي:          7.70 ج.م\n");
-    receipt.push_str("================================\n\n");
-    
-    receipt.push_str("    شكراً لك على الشراء!\n");
-    receipt.push_str("    نتمنى رؤيتك مرة أخرى\n\n\n\n");
-    
-    receipt
-}
-
-#[tauri::command]
-fn print_receipt(printer_name: String) -> Result<String, String> {
-    let mut commands = Vec::new();
-    
-    // ESC @ - Initialize printer
-    commands.extend_from_slice(&[0x1B, 0x40]);
-    
-    // 🔑 KEY STEP 1: Set Code Page 1256 (Arabic/Windows-1256)
-    // ESC t 28
-    commands.extend_from_slice(&[0x1B, 0x74, 28]);
-    
-    // 🔑 KEY STEP 2: Enable Special Font Mode 5 (Fixed Pitch Contextual 1256)
-    // FS C n (0x1C 0x43 n) where n=5 for Mode 5
-    commands.extend_from_slice(&[0x1C, 0x43, 5]);
-    
-    // Center align
-    commands.extend_from_slice(&[0x1B, 0x61, 0x01]);
-    
-    commands.extend_from_slice(b"\n");
-    
-    // Now encode Arabic text in Windows-1256
-    commands.extend_from_slice(encode_windows_1256("متجر عينة").as_slice());
-    commands.extend_from_slice(b"\n");
-    commands.extend_from_slice(encode_windows_1256("123 شارع الرئيسي").as_slice());
-    commands.extend_from_slice(b"\n\n");
-    
-    commands.extend_from_slice(b"================================\n");
-    commands.extend_from_slice(encode_windows_1256("الأصناف").as_slice());
-    commands.extend_from_slice(b"\n");
-    commands.extend_from_slice(b"================================\n\n");
-    
-    // Items with Arabic names
-    commands.extend_from_slice(encode_windows_1256("تفاح").as_slice());
-    commands.extend_from_slice(b"\n  2x @ 2.50 EGP = 5.00 EGP\n\n");
-    
-    commands.extend_from_slice(encode_windows_1256("موز").as_slice());
-    commands.extend_from_slice(b"\n  3x @ 1.50 EGP = 4.50 EGP\n\n");
-    
-    commands.extend_from_slice(encode_windows_1256("برتقال").as_slice());
-    commands.extend_from_slice(b"\n  1x @ 3.00 EGP = 3.00 EGP\n\n");
-    
-    commands.extend_from_slice(b"================================\n");
-    
-    // Totals
-    commands.extend_from_slice(encode_windows_1256("المجموع الفرعي: 7.00 ج.م").as_slice());
-    commands.extend_from_slice(b"\n");
-    
-    commands.extend_from_slice(encode_windows_1256("الضريبة (10٪): 0.70 ج.م").as_slice());
-    commands.extend_from_slice(b"\n");
-    
-    commands.extend_from_slice(b"================================\n");
-    
-    commands.extend_from_slice(encode_windows_1256("الإجمالي: 7.70 ج.م").as_slice());
-    commands.extend_from_slice(b"\n================================\n\n");
-    
-    // Footer
-    commands.extend_from_slice(encode_windows_1256("شكراً لك على الشراء!").as_slice());
-    commands.extend_from_slice(b"\n");
-    commands.extend_from_slice(encode_windows_1256("نتمنى رؤيتك مرة أخرى").as_slice());
-    commands.extend_from_slice(b"\n\n\n\n\n\n\n\n");
-    
-    // Paper cut
-    commands.extend_from_slice(&[0x1D, 0x56, 0x00]);
-    
-    #[cfg(target_os = "windows")]
-    {
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::Graphics::Printing::{
-            OpenPrinterW, StartDocPrinterW, WritePrinter,
-            EndDocPrinter, ClosePrinter, DOC_INFO_1W,
-        };
-        use windows::core::PWSTR;
-        use std::ptr;
-        
-        unsafe {
-            let printer_name_wide: Vec<u16> = printer_name.encode_utf16().chain(std::iter::once(0)).collect();
-            let mut h_printer: HANDLE = HANDLE::default();
-            
-            let result = OpenPrinterW(
-                PWSTR(printer_name_wide.as_ptr() as *mut u16),
-                &mut h_printer,
-                None,
-            );
-            
-            if result.is_err() {
-                return Err(format!("Failed to open printer"));
-            }
-            
-            let mut doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
-            let mut datatype: Vec<u16> = "RAW\0".encode_utf16().collect();
-            
-            let doc_info = DOC_INFO_1W {
-                pDocName: PWSTR(doc_name.as_mut_ptr()),
-                pOutputFile: PWSTR(ptr::null_mut()),
-                pDatatype: PWSTR(datatype.as_mut_ptr()),
-            };
-            
-            let job_id = StartDocPrinterW(h_printer, 1, &doc_info);
-            if job_id == 0 {
-                let _ = ClosePrinter(h_printer);
-                return Err("Failed to start print job".to_string());
-            }
-            
-            let mut bytes_written: u32 = 0;
-            let write_result = WritePrinter(
-                h_printer,
-                commands.as_ptr() as *const _,
-                commands.len() as u32,
-                &mut bytes_written,
-            );
-            
-            if !write_result.as_bool() {
-                let _ = EndDocPrinter(h_printer);
-                let _ = ClosePrinter(h_printer);
-                return Err("Failed to write to printer".to_string());
-            }
-            
-            let _ = EndDocPrinter(h_printer);
-            let _ = ClosePrinter(h_printer);
-        }
-    }
-    
-    Ok("✅ Receipt printed with NCR Arabic support! (Code Page 1256 + Contextual Mode 5)".to_string())
-}
-
-// Print receipt by rendering HTML to image and sending as bitmap
-#[tauri::command]
-async fn print_receipt_image(printer_name: String, image_data_url: String) -> Result<String, String> {
-    use base64::{Engine as _, engine::general_purpose};
-    
-    // Extract base64 data from data URL (format: "data:image/png;base64,...")
-    let base64_data = image_data_url
-        .strip_prefix("data:image/png;base64,")
-        .ok_or("Invalid image data URL format")?;
-    
-    // Decode base64 to bytes
-    let image_bytes = general_purpose::STANDARD.decode(base64_data)
-        .map_err(|e| format!("Failed to decode base64: {}", e))?;
-    
-    // Load image
-    let img = image::load_from_memory(&image_bytes)
-        .map_err(|e| format!("Failed to load image: {}", e))?;
-    
-    // Resize for 80mm thermal printer at 203 DPI
-    // 576px width = 72mm print width (with margins) = perfect for 80mm paper
-    // Max height: 30cm = 2400px at 203 DPI
-    let img = img.resize(576, 2400, image::imageops::FilterType::Lanczos3);
-    let gray_img = img.to_luma8();
-    
-    // Convert to 1-bit monochrome using dithering
-    let (width, height) = gray_img.dimensions();
-    
-    // STRICT SAFETY CHECK: Max 30cm (2400px at 203 DPI)
-    if height > 2400 {
-        return Err(format!("❌ Image too tall ({} pixels). Max allowed: 2400px (30cm).", height));
-    }
-    
-    let monochrome = apply_dithering(&gray_img);
+            // Temporarily disabled to keep focus on ESC/POS experiments and avoid CI issues on Windows GDI symbols.
+            // We can re-enable a GDI-based silent path later.
+            let _ = printer_name;
+            Err("Silent GDI printing is temporarily disabled in this build. Use ESC/POS methods instead.".to_string())
     
     // Pack pixels into bytes (8 pixels per byte, MSB first)
     let bytes_per_line = (width + 7) / 8;
@@ -945,10 +738,10 @@ async fn escpos_arabic_sweep(host: String, port: u16, try_contextual: bool) -> R
     let contextuals: &[Option<u8>] = if try_contextual { &[None, Some(5)] } else { &[None] };
 
     let mut all_ok = true;
-    let mut p = printer.debug_mode(Some(DebugMode::Hex)).init()?;
-    p = p.justify(JustifyMode::LEFT)?;
-    p = p.writeln("ESC/POS Arabic sweep (Windows-1256 bytes)")?;
-    p = p.writeln("---")?;
+    let mut p = printer.debug_mode(Some(DebugMode::Hex)).init().map_err(|e| e.to_string())?;
+    p = p.justify(JustifyMode::LEFT).map_err(|e| e.to_string())?;
+    p = p.writeln("ESC/POS Arabic sweep (Windows-1256 bytes)").map_err(|e| e.to_string())?;
+    p = p.writeln("---").map_err(|e| e.to_string())?;
 
     for &cp in candidates {
         for &ctx in contextuals {
@@ -960,12 +753,13 @@ async fn escpos_arabic_sweep(host: String, port: u16, try_contextual: bool) -> R
             block.extend_from_slice(format!("CP {} / Ctx {:?}\n", cp, ctx).as_bytes());
             block.extend_from_slice(&encode_windows_1256("متجر عينة")); block.extend_from_slice(b"\n");
             block.extend_from_slice(&encode_windows_1256("123 شارع الرئيسي")); block.extend_from_slice(b"\n\n");
-            p = p.custom(&block)?;
+            p = p.custom(&block).map_err(|e| e.to_string())?;
         }
     }
 
     // Cut at end
-    let res: EscposResult<()> = p.feed()?.print_cut().map(|_| ());
+    let p = p.feed().map_err(|e| e.to_string())?;
+    let res: EscposResult<()> = p.print_cut().map(|_| ());
     if res.is_err() { all_ok = false; }
 
     if all_ok { Ok("✅ Sweep sent. Inspect which CP/Contextual renders Arabic correctly.".into()) }
