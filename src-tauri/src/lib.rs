@@ -571,7 +571,7 @@ fn print_receipt_text_mode(printer_name: String) -> Result<String, String> {
 fn print_receipt_silent(printer_name: String) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::Foundation::{HANDLE, RECT};
+        use windows::Win32::Foundation::RECT;
         use windows::Win32::Graphics::Gdi::{
             CreateDCW, DeleteDC, CreateFontW, SelectObject, DeleteObject,
             SetTextAlign, SetBkMode, GetDeviceCaps, DrawTextW,
@@ -579,67 +579,44 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             FW_NORMAL, FW_BOLD, ARABIC_CHARSET, OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, FF_DONTCARE,
             TA_RIGHT, TA_RTLREADING, TRANSPARENT, DT_CENTER, DT_RTLREADING,
+            StartDocW, EndDoc, StartPage, EndPage, DOCINFOW,
         };
-        use windows::Win32::Graphics::Printing::{
-            OpenPrinterW, ClosePrinter, StartDocPrinterW, EndDocPrinter,
-            StartPagePrinter, EndPagePrinter, DOC_INFO_1W,
-        };
-        use windows::core::PWSTR;
-        use std::ptr;
+        use windows::core::PCWSTR;
         
         unsafe {
             let printer_name_wide: Vec<u16> = printer_name.encode_utf16().chain(std::iter::once(0)).collect();
-            let mut h_printer: HANDLE = HANDLE::default();
-            
-            // Open printer
-            let result = OpenPrinterW(
-                PWSTR(printer_name_wide.as_ptr() as *mut u16),
-                &mut h_printer,
-                None,
-            );
-            
-            if result.is_err() {
-                return Err(format!("Failed to open printer: {}", printer_name));
-            }
-            
-            // Create GDI device context for the printer
+            let wins_pool: Vec<u16> = "WINSPOOL\0".encode_utf16().collect();
+            // Create a printer device context using the Windows spooler driver
             let h_dc = CreateDCW(
-                None,
-                PWSTR(printer_name_wide.as_ptr() as *mut u16),
-                None,
+                PCWSTR(wins_pool.as_ptr()),
+                PCWSTR(printer_name_wide.as_ptr()),
+                PCWSTR::null(),
                 None,
             );
             
             if h_dc.is_invalid() {
-                let _ = ClosePrinter(h_printer);
                 return Err("Failed to create printer device context".to_string());
             }
             
-            // Start document with NULL datatype (allows GDI rendering!)
+            // Start a GDI document on the HDC
             let mut doc_name: Vec<u16> = "Receipt\0".encode_utf16().collect();
-            
-            let doc_info = DOC_INFO_1W {
-                pDocName: PWSTR(doc_name.as_mut_ptr()),
-                pOutputFile: PWSTR(ptr::null_mut()),
-                pDatatype: PWSTR(ptr::null_mut()), // NULL = EMF (GDI graphics mode)
+            let doc_info = DOCINFOW {
+                cbSize: std::mem::size_of::<DOCINFOW>() as i32,
+                lpszDocName: PCWSTR(doc_name.as_ptr()),
+                lpszOutput: PCWSTR::null(),
+                lpszDatatype: PCWSTR::null(),
+                fwType: 0,
             };
-            
-            let job_id = StartDocPrinterW(h_printer, 1, &doc_info);
-            if job_id == 0 {
-                let error = std::io::Error::last_os_error();
+            let doc_ret = StartDocW(h_dc, &doc_info);
+            if doc_ret <= 0 {
                 let _ = DeleteDC(h_dc);
-                let _ = ClosePrinter(h_printer);
-                return Err(format!("Failed to start document: {} (error code: {})", error, error.raw_os_error().unwrap_or(0)));
+                return Err("Failed to start GDI document".to_string());
             }
-            
-            // Start page
-            let page_result = StartPagePrinter(h_printer);
-            if !page_result.as_bool() {
-                let error = std::io::Error::last_os_error();
-                let _ = EndDocPrinter(h_printer);
+
+            if StartPage(h_dc) <= 0 {
+                let _ = EndDoc(h_dc);
                 let _ = DeleteDC(h_dc);
-                let _ = ClosePrinter(h_printer);
-                return Err(format!("Failed to start page: {} (error code: {})", error, error.raw_os_error().unwrap_or(0)));
+                return Err("Failed to start GDI page".to_string());
             }
             
             // Set up font for Arabic text
@@ -790,24 +767,11 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
             let _ = DeleteObject(h_font_bold);
             
             // End page and document (EMF mode sends GDI graphics to printer!)
-            let end_page_result = EndPagePrinter(h_printer);
-            if !end_page_result.as_bool() {
-                let error = std::io::Error::last_os_error();
-                eprintln!("⚠️ EndPagePrinter warning: {} (continuing...)", error);
-            }
-            
-            let end_doc_result = EndDocPrinter(h_printer);
-            if !end_doc_result.as_bool() {
-                let error = std::io::Error::last_os_error();
-                let _ = DeleteDC(h_dc);
-                let _ = ClosePrinter(h_printer);
-                return Err(format!("Failed to end document: {} (error code: {})", error, error.raw_os_error().unwrap_or(0)));
-            }
-            
+            let _ = EndPage(h_dc);
+            let _ = EndDoc(h_dc);
             let _ = DeleteDC(h_dc);
-            let _ = ClosePrinter(h_printer);
             
-            println!("✅ Print job #{} completed successfully!", job_id);
+            println!("✅ GDI print job completed successfully!");
         }
     }
     
@@ -910,6 +874,104 @@ async fn escpos_print_image(host: String, port: u16, image_data_url: String) -> 
     }
 }
 
+// Try a specific ESC/POS code page (ESC t n) and optional NCR contextual mode (FS C m)
+// Sends a short Arabic sample encoded as Windows-1256 bytes.
+#[tauri::command]
+async fn escpos_print_text_ar_custom(host: String, port: u16, codepage: u8, contextual: Option<u8>) -> Result<String, String> {
+    use escpos::printer::Printer;
+    use escpos::printer_options::PrinterOptions;
+    use escpos::utils::*;
+    use escpos::{driver::NetworkDriver, errors::Result as EscposResult};
+
+    let driver = NetworkDriver::open(&host, port, None)
+        .map_err(|e| format!("Failed to open network printer {}:{} - {}", host, port, e))?;
+
+    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()));
+    let mut cmd: Vec<u8> = vec![];
+    // ESC @ init
+    cmd.extend_from_slice(&[0x1B, 0x40]);
+    // ESC t n (select codepage)
+    cmd.extend_from_slice(&[0x1B, 0x74, codepage]);
+    // Optional contextual font mode (NCR extension): FS C m
+    if let Some(m) = contextual { cmd.extend_from_slice(&[0x1C, 0x43, m]); }
+    // Center
+    cmd.extend_from_slice(&[0x1B, 0x61, 0x01]);
+    // Label (ASCII)
+    cmd.extend_from_slice(format!("CP {} / Ctx {:?}\n", codepage, contextual).as_bytes());
+    // Arabic lines (Windows-1256)
+    cmd.extend_from_slice(&encode_windows_1256("متجر عينة"));
+    cmd.extend_from_slice(b"\n");
+    cmd.extend_from_slice(&encode_windows_1256("123 شارع الرئيسي"));
+    cmd.extend_from_slice(b"\n\n");
+    // Right align
+    cmd.extend_from_slice(&[0x1B, 0x61, 0x02]);
+    cmd.extend_from_slice(&encode_windows_1256("تفاح")); cmd.extend_from_slice(b"\n");
+    cmd.extend_from_slice(&encode_windows_1256("2x @ 2.50 ج.م = 5.00 ج.م")); cmd.extend_from_slice(b"\n");
+    cmd.extend_from_slice(&encode_windows_1256("موز")); cmd.extend_from_slice(b"\n");
+    cmd.extend_from_slice(&encode_windows_1256("3x @ 1.50 ج.م = 4.50 ج.م")); cmd.extend_from_slice(b"\n");
+    cmd.extend_from_slice(&encode_windows_1256("برتقال")); cmd.extend_from_slice(b"\n");
+    cmd.extend_from_slice(&encode_windows_1256("1x @ 3.00 ج.م = 3.00 ج.م")); cmd.extend_from_slice(b"\n\n");
+    // Cut
+    cmd.extend_from_slice(&[0x1D, 0x56, 0x00]);
+
+    let res: EscposResult<()> = printer
+        .debug_mode(Some(DebugMode::Hex))
+        .init()
+        .and_then(|p| p.custom(&cmd))
+        .and_then(|p| p.print())
+        .map(|_| ());
+    match res {
+        Ok(_) => Ok(format!("✅ Sent with CP {} and contextual {:?}", codepage, contextual)),
+        Err(e) => Err(format!("Failed to send custom Arabic test: {}", e)),
+    }
+}
+
+// Sweep through a curated set of ESC t code page values (and optional contextual mode)
+// to quickly discover which mapping, if any, produces readable Arabic on the device.
+#[tauri::command]
+async fn escpos_arabic_sweep(host: String, port: u16, try_contextual: bool) -> Result<String, String> {
+    use escpos::printer::Printer;
+    use escpos::printer_options::PrinterOptions;
+    use escpos::utils::*;
+    use escpos::{driver::NetworkDriver, errors::Result as EscposResult};
+
+    let driver = NetworkDriver::open(&host, port, None)
+        .map_err(|e| format!("Failed to open network printer {}:{} - {}", host, port, e))?;
+
+    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()));
+
+    // Common candidates across firmwares (numbers vary per vendor). Includes 28 for Win-1256 on some devices.
+    let candidates: &[u8] = &[0, 2, 3, 17, 18, 27, 28, 29, 30, 33, 34, 61];
+    let contextuals: &[Option<u8>] = if try_contextual { &[None, Some(5)] } else { &[None] };
+
+    let mut all_ok = true;
+    let mut p = printer.debug_mode(Some(DebugMode::Hex)).init()?;
+    p = p.justify(JustifyMode::LEFT)?;
+    p = p.writeln("ESC/POS Arabic sweep (Windows-1256 bytes)")?;
+    p = p.writeln("---")?;
+
+    for &cp in candidates {
+        for &ctx in contextuals {
+            // Build a small block per combination to limit paper usage
+            let mut block: Vec<u8> = vec![];
+            block.extend_from_slice(&[0x1B, 0x74, cp]); // ESC t cp
+            if let Some(m) = ctx { block.extend_from_slice(&[0x1C, 0x43, m]); } // FS C m
+            block.extend_from_slice(b"\n");
+            block.extend_from_slice(format!("CP {} / Ctx {:?}\n", cp, ctx).as_bytes());
+            block.extend_from_slice(&encode_windows_1256("متجر عينة")); block.extend_from_slice(b"\n");
+            block.extend_from_slice(&encode_windows_1256("123 شارع الرئيسي")); block.extend_from_slice(b"\n\n");
+            p = p.custom(&block)?;
+        }
+    }
+
+    // Cut at end
+    let res: EscposResult<()> = p.feed()?.print_cut().map(|_| ());
+    if res.is_err() { all_ok = false; }
+
+    if all_ok { Ok("✅ Sweep sent. Inspect which CP/Contextual renders Arabic correctly.".into()) }
+    else { Err("Sweep encountered an error near the end (but some lines may have printed).".into()) }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -924,6 +986,8 @@ pub fn run() {
             print_receipt_silent,
             escpos_print_text_ar,
             escpos_print_image,
+            escpos_print_text_ar_custom,
+            escpos_arabic_sweep,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
