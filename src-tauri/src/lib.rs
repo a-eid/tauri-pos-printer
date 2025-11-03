@@ -58,7 +58,10 @@ fn is_arabic_char(c: char) -> bool {
 fn arabic_visual(src: &str) -> String {
     let shaped = reshape_line(src);
     #[derive(Clone, Copy, PartialEq)]
-    enum K { Ar, Other }
+    enum K {
+        Ar,
+        Other,
+    }
     let mut runs: Vec<(K, String)> = Vec::new();
     let mut cur_k: Option<K> = None;
     let mut buf = String::new();
@@ -134,11 +137,12 @@ async fn print_receipt() -> Result<String, String> {
         .map_err(|e| format!("Failed to open printer on {} @{}: {}", port, baud, e))?;
 
     // NCR 7197 (ESC/POS compatible): use PC864 and pre-shape lines.
-    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::new(Some(PageCode::PC864), None, 42)))
-        .debug_mode(None);
+    let opts = PrinterOptions::new(Some(PageCode::PC864), None, 42);
 
-    // init() returns EscposResult<&mut Printer>, convert error to String only here
-    let printer = printer.init().map_err(|e| e.to_string())?;
+    // Avoid temporary-drop borrow: bind the printer first, then call methods.
+    let mut printer_obj = Printer::new(driver, Protocol::default(), Some(opts));
+    printer_obj.debug_mode(None);
+    let printer = printer_obj.init().map_err(|e| e.to_string())?;
 
     let line1 = reshape_line("متجر عينة");
     let line2 = reshape_line("اختبار الطباعة");
