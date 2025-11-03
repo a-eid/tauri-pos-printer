@@ -1,8 +1,8 @@
 use escpos::{driver::SerialPortDriver, errors::Result as EscposResult, printer::Printer, printer_options::PrinterOptions, utils::*};
 use image::{ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_line_segment_mut, draw_text_mut};
-use ab_reshaper::reshape_line;
 use ab_glyph::{FontRef, PxScale};
+use ar_reshaper::reshape_line;
 
 // ============================================================================
 // Configuration
@@ -44,6 +44,49 @@ fn normalize_com_port(port: &str) -> String {
     {
         port.to_string()
     }
+}
+
+// --- Minimal RTL visualizer for bitmap text: shape Arabic, reverse Arabic runs, keep digits/LTR runs ---
+fn is_arabic_char(c: char) -> bool {
+    (('\u{0600}'..='\u{06FF}').contains(&c))
+        || (('\u{0750}'..='\u{077F}').contains(&c))
+        || (('\u{08A0}'..='\u{08FF}').contains(&c))
+        || (('\u{FB50}'..='\u{FDFF}').contains(&c))
+        || (('\u{FE70}'..='\u{FEFF}').contains(&c))
+}
+
+fn arabic_visual(src: &str) -> String {
+    let shaped = reshape_line(src);
+    #[derive(Clone, Copy, PartialEq)]
+    enum K { Ar, Other }
+    let mut runs: Vec<(K, String)> = Vec::new();
+    let mut cur_k: Option<K> = None;
+    let mut buf = String::new();
+
+    for ch in shaped.chars() {
+        let k = if is_arabic_char(ch) { K::Ar } else { K::Other };
+        if cur_k == Some(k) || cur_k.is_none() {
+            buf.push(ch);
+            cur_k.get_or_insert(k);
+        } else {
+            runs.push((cur_k.unwrap(), std::mem::take(&mut buf)));
+            cur_k = Some(k);
+            buf.push(ch);
+        }
+    }
+    if !buf.is_empty() {
+        runs.push((cur_k.unwrap_or(K::Other), buf));
+    }
+
+    let mut out = String::new();
+    for (k, run) in runs.into_iter().rev() {
+        if k == K::Ar {
+            out.extend(run.chars().rev());
+        } else {
+            out.push_str(&run);
+        }
+    }
+    out
 }
 
 // ============================================================================
@@ -96,12 +139,10 @@ async fn print_receipt() -> Result<String, String> {
     let mut p = Printer::new(driver, Protocol::default(), Some(opts))
         .debug_mode(None)
         .init().map_err(|e| e.to_string())?
-        // Force code page in case firmware ignores options
-        // ESC t 37 => PC864 (Arabic)
+        // Force code page in case firmware ignores options: ESC t 37 => PC864
         .custom(&[0x1B, 0x74, 37])?
         .justify(JustifyMode::CENTER)?;
 
-    // Minimal verification lines
     let line1 = reshape_line("متجر عينة");
     let line2 = reshape_line("اختبار الطباعة");
 
@@ -152,9 +193,9 @@ fn generate_receipt_image() -> Result<String, String> {
     let items = get_receipt_items();
     let (subtotal, tax, total) = calculate_totals();
 
-    // Image dimensions (80mm = 576px at 72 DPI)
+    // Image dimensions (80mm = 576px at ~72–203 DPI printers)
     let width = 576u32;
-    let mut height = 800u32;
+    let mut height = 900u32;
 
     // Create white background
     let mut img: RgbImage = ImageBuffer::from_pixel(width, height, Rgb([255u8, 255u8, 255u8]));
@@ -172,18 +213,20 @@ fn generate_receipt_image() -> Result<String, String> {
 
     // Helper to draw text centered
     let draw_centered_text = |img: &mut RgbImage, text: &str, y_pos: f32, scale: f32| {
+        let text_vis = arabic_visual(text);
         let scale = PxScale::from(scale);
-        let text_width = text.len() as f32 * scale.x * 0.5;
-        let x = (width as f32 / 2.0 - text_width / 2.0) as i32;
-        draw_text_mut(img, black, x.max(20), y_pos as i32, scale, &font, text);
+        let approx_w = text_vis.chars().count() as f32 * scale.x * 0.5;
+        let x = (width as f32 / 2.0 - approx_w / 2.0) as i32;
+        draw_text_mut(img, black, x.max(20), y_pos as i32, scale, &font, &text_vis);
     };
 
     // Helper to draw text right-aligned
     let draw_right_text = |img: &mut RgbImage, text: &str, y_pos: f32, scale: f32| {
+        let text_vis = arabic_visual(text);
         let scale_obj = PxScale::from(scale);
-        let text_width = text.len() as f32 * scale * 0.5;
-        let x = (right_x as f32 - text_width) as i32;
-        draw_text_mut(img, black, x.max(20), y_pos as i32, scale_obj, &font, text);
+        let approx_w = text_vis.chars().count() as f32 * scale * 0.5;
+        let x = (right_x as f32 - approx_w) as i32;
+        draw_text_mut(img, black, x.max(20), y_pos as i32, scale_obj, &font, &text_vis);
     };
 
     // Helper to draw divider
@@ -213,8 +256,7 @@ fn generate_receipt_image() -> Result<String, String> {
         draw_right_text(&mut img, item.name_ar, y, 22.0);
         y += 30.0;
 
-        let item_line = format!("{}x @ {:.2} ج.م = {:.2} ج.م",
-            item.quantity, item.price, item.total());
+        let item_line = format!("{}x @ {:.2} ج.م = {:.2} ج.م", item.quantity, item.price, item.total());
         draw_centered_text(&mut img, &item_line, y, 18.0);
         y += 35.0;
     }
