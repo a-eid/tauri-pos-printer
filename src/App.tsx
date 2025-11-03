@@ -38,10 +38,13 @@ function App() {
 
 	const loadReceiptData = async () => {
 		try {
+			console.log("Loading receipt data...");
 			const data = await invoke<ReceiptData>("get_receipt_data");
+			console.log("Receipt data loaded:", data);
 			setReceiptData(data);
 		} catch (error) {
 			console.error("Failed to load receipt data:", error);
+			setMessage(`❌ Failed to load receipt data: ${error}`);
 		}
 	};
 
@@ -59,13 +62,24 @@ function App() {
 	};
 
 	const handlePreview = () => {
-		if (!receiptData) return;
+		if (!receiptData) {
+			setMessage("⚠️ No receipt data loaded");
+			return;
+		}
 
 		const canvas = canvasRef.current;
-		if (!canvas) return;
+		if (!canvas) {
+			setMessage("⚠️ Canvas not available");
+			return;
+		}
 
 		const ctx = canvas.getContext("2d");
-		if (!ctx) return;
+		if (!ctx) {
+			setMessage("⚠️ Canvas context not available");
+			return;
+		}
+
+		console.log("Receipt data:", receiptData);
 
 		// 80mm width = 576px at 72 DPI
 		const width = 576;
@@ -76,9 +90,8 @@ function App() {
 		ctx.fillStyle = "#ffffff";
 		ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-		// Setup drawing
+		// Setup drawing with proper font that supports Arabic
 		ctx.fillStyle = "#000000";
-		ctx.direction = "rtl";
 
 		let y = 40;
 		const centerX = width / 2;
@@ -98,18 +111,18 @@ function App() {
 
 		// Header
 		ctx.textAlign = "center";
-		ctx.font = "bold 28px Arial, Tahoma, sans-serif";
+		ctx.font = "bold 28px 'Segoe UI', Tahoma, Arial, sans-serif";
 		ctx.fillText(receiptData.header.storeName, centerX, y);
 		y += 35;
 
-		ctx.font = "16px Arial, Tahoma, sans-serif";
+		ctx.font = "16px 'Segoe UI', Tahoma, Arial, sans-serif";
 		ctx.fillText(receiptData.header.address, centerX, y);
 		y += 30;
 
 		drawDivider();
 
 		// Items header
-		ctx.font = "bold 20px Arial, Tahoma, sans-serif";
+		ctx.font = "bold 20px 'Segoe UI', Tahoma, Arial, sans-serif";
 		ctx.fillText("الأصناف", centerX, y);
 		y += 30;
 
@@ -118,11 +131,11 @@ function App() {
 		// Items
 		ctx.textAlign = "right";
 		receiptData.items.forEach((item) => {
-			ctx.font = "bold 18px Arial, Tahoma, sans-serif";
+			ctx.font = "bold 18px 'Segoe UI', Tahoma, Arial, sans-serif";
 			ctx.fillText(item.name, rightX, y);
 			y += 25;
 
-			ctx.font = "16px Arial, Tahoma, sans-serif";
+			ctx.font = "16px 'Segoe UI', Tahoma, Arial, sans-serif";
 			ctx.textAlign = "center";
 			const itemLine = `${item.quantity}x @ ${item.price.toFixed(2)} ج.م = ${item.total.toFixed(2)} ج.م`;
 			ctx.fillText(itemLine, centerX, y);
@@ -134,7 +147,7 @@ function App() {
 		drawDivider();
 
 		// Totals
-		ctx.font = "16px Arial, Tahoma, sans-serif";
+		ctx.font = "16px 'Segoe UI', Tahoma, Arial, sans-serif";
 		ctx.fillText(
 			`المجموع الفرعي: ${receiptData.totals.subtotal.toFixed(2)} ج.م`,
 			rightX,
@@ -150,7 +163,7 @@ function App() {
 
 		drawDivider();
 
-		ctx.font = "bold 22px Arial, Tahoma, sans-serif";
+		ctx.font = "bold 22px 'Segoe UI', Tahoma, Arial, sans-serif";
 		ctx.fillText(
 			`الإجمالي: ${receiptData.totals.total.toFixed(2)} ج.م`,
 			rightX,
@@ -162,19 +175,24 @@ function App() {
 
 		// Footer
 		ctx.textAlign = "center";
-		ctx.font = "bold 18px Arial, Tahoma, sans-serif";
+		ctx.font = "bold 18px 'Segoe UI', Tahoma, Arial, sans-serif";
 		ctx.fillText(receiptData.footer.thanks, centerX, y);
 		y += 25;
-		ctx.font = "16px Arial, Tahoma, sans-serif";
+		ctx.font = "16px 'Segoe UI', Tahoma, Arial, sans-serif";
 		ctx.fillText(receiptData.footer.comeback, centerX, y);
 		y += 40;
 
 		// Trim canvas height
 		canvas.height = y;
 
+		console.log("Canvas drawn successfully. Height:", y);
+
 		// Open in new window
 		setMessage("✅ Preview generated! Opening in new window...");
 		const dataUrl = canvas.toDataURL("image/png");
+		
+		console.log("Data URL length:", dataUrl.length);
+		
 		const win = window.open("", "_blank");
 		if (win) {
 			win.document.write(`
