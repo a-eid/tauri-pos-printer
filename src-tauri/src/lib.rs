@@ -1,6 +1,5 @@
 use escpos::{
     driver::SerialPortDriver,
-    errors::Result as EscposResult,
     printer::Printer,
     printer_options::PrinterOptions,
     utils::*,
@@ -8,15 +7,13 @@ use escpos::{
 use ar_reshaper::reshape_line;
 
 // ============================================================================
-// Minimal config
+// Minimal config (NCR 7197 probe)
 // ============================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
 const DEFAULT_BAUD_RATE: u32 = 9600;
 
-// For NCR 7197 the ESC t index for Arabic can differ from Epson.
-// We'll probe a few likely pages: PC864 (Epson=37), Win-1256 (often=50),
-// and some nearby vendor slots that NCR firmwares sometimes use.
+// Try common device code-page indexes (ESC t n)
 const TRY_PAGES: &[u8] = &[37, 50, 23, 22, 17, 18, 33];
 
 // ============================================================================
@@ -65,10 +62,10 @@ async fn print_receipt() -> Result<String, String> {
     let driver = SerialPortDriver::open(&port, baud, None)
         .map_err(|e| format!("Failed to open printer on {} @{}: {}", port, baud, e))?;
 
-    // Tell escpos-rs to encode using PC864 bytes (works with our shaped text).
-    // We will then vary ESC t 'n' on the device to find the matching slot.
+    // Software encoder: PC864 (works with shaped Arabic we send)
     let opts = PrinterOptions::new(Some(PageCode::PC864), None, 42);
 
+    // Build printer without temporary drops
     let mut printer_obj = Printer::new(driver, Protocol::default(), Some(opts));
     printer_obj.debug_mode(None);
     let mut p = printer_obj.init().map_err(|e| e.to_string())?;
@@ -76,26 +73,22 @@ async fn print_receipt() -> Result<String, String> {
     let line1 = reshape_line("متجر عينة");
     let line2 = reshape_line("اختبار الطباعة");
 
-    // Print a short block for each candidate ESC t value
+    // Print a small block with different ESC t values
     for &n in TRY_PAGES {
-        // Select device code page
-        p = p.custom(&[0x1B, 0x74, n])?;
-        // Label in ASCII so you can see which 'n' worked
+        p = p.custom(&[0x1B, 0x74, n]).map_err(|e| e.to_string())?; // set device page
         let label = format!("ESC t {} →", n);
 
-        p = p.justify(JustifyMode::CENTER)?
-            .writeln(&label)?
-            .writeln(&line1)?
-            .writeln(&line2)?
-            .feed()?;
+        p = p.justify(JustifyMode::CENTER).map_err(|e| e.to_string())?
+            .writeln(&label).map_err(|e| e.to_string())?
+            .writeln(&line1).map_err(|e| e.to_string())?
+            .writeln(&line2).map_err(|e| e.to_string())?
+            .feed().map_err(|e| e.to_string())?;
     }
 
-    // Cut & send
-    let res: EscposResult<()> = p.print_cut().and_then(|p| p.print()).map(|_| ());
-    match res {
-        Ok(()) => Ok(format!("✅ Probe sent to {} (pages: {:?})", port, TRY_PAGES)),
-        Err(e) => Err(format!("Failed to print: {}", e)),
-    }
+    p = p.print_cut().map_err(|e| e.to_string())?;
+    p.print().map_err(|e| e.to_string())?;
+
+    Ok(format!("✅ Probe sent to {} (pages: {:?})", port, TRY_PAGES))
 }
 
 // ============================================================================
