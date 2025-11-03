@@ -29,6 +29,11 @@ escpos = { version = "0.17.0", features = ["full"] }
 serialport = "4"
 base64 = "0.22"
 dirs = "5"
+image = "0.25"
+imageproc = "0.25"
+rusttype = "0.9"
+unicode-bidi = "0.3"
+unicode-normalization = "0.1"
 
 #[target.'cfg(windows)'.dependencies]
 # No direct windows crate usage required now; printing via escpos-rs drivers.

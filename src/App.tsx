@@ -1,5 +1,5 @@
 // biome-ignore assist/source/organizeImports: disabled.
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -29,7 +29,6 @@ function App() {
 	const [message, setMessage] = useState<string>("");
 	const [loading, setLoading] = useState<boolean>(false);
 	const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
-	const canvasRef = useRef<HTMLCanvasElement>(null);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: ...
 	useEffect(() => {
@@ -62,151 +61,21 @@ function App() {
 		}
 	};
 
-	const handlePreview = () => {
+	const handlePreview = async () => {
 		if (!receiptData) {
 			setMessage("⚠️ No receipt data loaded");
 			return;
 		}
 
-		const canvas = canvasRef.current;
-		if (!canvas) {
-			setMessage("⚠️ Canvas not available");
-			return;
+		try {
+			setMessage("🎨 Generating receipt image...");
+			const result = await invoke<string>("generate_receipt_image");
+			setMessage(result);
+			console.log("Image generated successfully:", result);
+		} catch (error) {
+			setMessage(`❌ Failed to generate image: ${error}`);
+			console.error("Generation error:", error);
 		}
-
-		const ctx = canvas.getContext("2d");
-		if (!ctx) {
-			setMessage("⚠️ Canvas context not available");
-			return;
-		}
-
-		console.log("Receipt data:", receiptData);
-		
-		// Test Arabic rendering
-		console.log("Store name:", receiptData.header.storeName);
-		console.log("Item names:", receiptData.items.map(i => i.name));
-
-		// 80mm width = 576px at 72 DPI
-		const width = 576;
-		canvas.width = width;
-		canvas.height = 1200; // Increased initial height
-
-		// White background
-		ctx.fillStyle = "#ffffff";
-		ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-		// Setup drawing with proper font that supports Arabic
-		ctx.fillStyle = "#000000";
-
-		let y = 40;
-		const centerX = width / 2;
-		const rightX = width - 40;
-
-		// Helper to draw divider
-		const drawDivider = () => {
-			ctx.strokeStyle = "#000";
-			ctx.setLineDash([5, 5]);
-			ctx.beginPath();
-			ctx.moveTo(20, y);
-			ctx.lineTo(width - 20, y);
-			ctx.stroke();
-			ctx.setLineDash([]);
-			y += 25;
-		};
-
-		// Header
-		ctx.textAlign = "center";
-		ctx.font = "bold 28px 'Segoe UI', Tahoma, Arial, sans-serif";
-		ctx.fillText(receiptData.header.storeName, centerX, y);
-		y += 35;
-
-		ctx.font = "16px 'Segoe UI', Tahoma, Arial, sans-serif";
-		ctx.fillText(receiptData.header.address, centerX, y);
-		y += 30;
-
-		drawDivider();
-
-		// Items header
-		ctx.font = "bold 20px 'Segoe UI', Tahoma, Arial, sans-serif";
-		ctx.fillText("الأصناف", centerX, y);
-		y += 30;
-
-		drawDivider();
-
-		// Items
-		ctx.textAlign = "right";
-		receiptData.items.forEach((item) => {
-			ctx.font = "bold 18px 'Segoe UI', Tahoma, Arial, sans-serif";
-			ctx.fillText(item.name, rightX, y);
-			y += 25;
-
-			ctx.font = "16px 'Segoe UI', Tahoma, Arial, sans-serif";
-			ctx.textAlign = "center";
-			const itemLine = `${item.quantity}x @ ${item.price.toFixed(2)} ج.م = ${item.total.toFixed(2)} ج.م`;
-			ctx.fillText(itemLine, centerX, y);
-			y += 30;
-			ctx.textAlign = "right";
-		});
-
-		y += 10;
-		drawDivider();
-
-		// Totals
-		ctx.font = "16px 'Segoe UI', Tahoma, Arial, sans-serif";
-		ctx.fillText(
-			`المجموع الفرعي: ${receiptData.totals.subtotal.toFixed(2)} ج.م`,
-			rightX,
-			y,
-		);
-		y += 25;
-		ctx.fillText(
-			`الضريبة (10٪): ${receiptData.totals.tax.toFixed(2)} ج.م`,
-			rightX,
-			y,
-		);
-		y += 30;
-
-		drawDivider();
-
-		ctx.font = "bold 22px 'Segoe UI', Tahoma, Arial, sans-serif";
-		ctx.fillText(
-			`الإجمالي: ${receiptData.totals.total.toFixed(2)} ج.م`,
-			rightX,
-			y,
-		);
-		y += 35;
-
-		drawDivider();
-
-		// Footer
-		ctx.textAlign = "center";
-		ctx.font = "bold 18px 'Segoe UI', Tahoma, Arial, sans-serif";
-		ctx.fillText(receiptData.footer.thanks, centerX, y);
-		y += 25;
-		ctx.font = "16px 'Segoe UI', Tahoma, Arial, sans-serif";
-		ctx.fillText(receiptData.footer.comeback, centerX, y);
-		y += 40;
-
-		// Trim canvas height
-		canvas.height = y;
-
-		console.log("Canvas drawn successfully. Height:", y);
-
-		// Convert to data URL
-		const dataUrl = canvas.toDataURL("image/png");
-		console.log("Data URL length:", dataUrl.length);
-
-		// Save to desktop
-		setMessage("💾 Saving receipt to Desktop...");
-		invoke<string>("save_receipt_image", { imageData: dataUrl })
-			.then((result) => {
-				setMessage(result);
-				console.log("Image saved successfully");
-			})
-			.catch((error) => {
-				setMessage(`❌ Failed to save image: ${error}`);
-				console.error("Save error:", error);
-			});
 	};
 
 	return (
@@ -279,8 +148,6 @@ function App() {
 					</ul>
 				</div>
 			</section>
-
-			<canvas ref={canvasRef} style={{ display: "none" }} />
 		</main>
 	);
 }

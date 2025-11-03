@@ -3,6 +3,9 @@ use escpos::{driver::SerialPortDriver, errors::Result as EscposResult, printer::
 use std::fs;
 use std::path::PathBuf;
 use base64::Engine;
+use image::{ImageBuffer, Rgb, RgbImage};
+use imageproc::drawing::{draw_text_mut, draw_line_segment_mut};
+use rusttype::{Font, Scale};
 
 // ============================================================================
 // Configuration
@@ -204,24 +207,116 @@ fn get_receipt_data() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-fn save_receipt_image(image_data: String) -> Result<String, String> {
-    // Remove the data URL prefix if present
-    let base64_data = if image_data.starts_with("data:image/png;base64,") {
-        &image_data[22..]
-    } else {
-        &image_data
+fn generate_receipt_image() -> Result<String, String> {
+    let items = get_receipt_items();
+    let (subtotal, tax, total) = calculate_totals();
+    
+    // Image dimensions (80mm = 576px at 72 DPI)
+    let width = 576u32;
+    let mut height = 800u32;
+    
+    // Create white background
+    let mut img: RgbImage = ImageBuffer::from_pixel(width, height, Rgb([255u8, 255u8, 255u8]));
+    
+    // Embed a font that supports Arabic - using Liberation Sans (similar to Arial)
+    // For now, we'll use a simple approach - just render the text as-is
+    // Note: For proper Arabic rendering, we need a font file with Arabic glyphs
+    let font_data = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
+    let font = Font::try_from_bytes(font_data as &[u8])
+        .ok_or_else(|| "Failed to load font".to_string())?;
+    
+    let black = Rgb([0u8, 0u8, 0u8]);
+    let gray = Rgb([128u8, 128u8, 128u8]);
+    
+    let mut y = 30.0f32;
+    let center_x = (width / 2) as i32;
+    let right_x = (width - 40) as i32;
+    
+    // Helper to draw text centered
+    let draw_centered_text = |img: &mut RgbImage, text: &str, y_pos: f32, scale: f32| {
+        let scale = Scale::uniform(scale);
+        // Simple centering - not perfect but works
+        let text_width = text.len() as f32 * scale.x * 0.5;
+        let x = (width as f32 / 2.0 - text_width / 2.0) as i32;
+        draw_text_mut(img, black, x.max(20), y_pos as i32, scale, &font, text);
     };
     
-    // Decode base64
-    let image_bytes = base64::engine::general_purpose::STANDARD
-        .decode(base64_data)
-        .map_err(|e| format!("Failed to decode image: {}", e))?;
+    // Helper to draw text right-aligned
+    let draw_right_text = |img: &mut RgbImage, text: &str, y_pos: f32, scale: f32| {
+        let scale_obj = Scale::uniform(scale);
+        let text_width = text.len() as f32 * scale * 0.5;
+        let x = (right_x as f32 - text_width) as i32;
+        draw_text_mut(img, black, x.max(20), y_pos as i32, scale_obj, &font, text);
+    };
     
-    // Get desktop path
+    // Helper to draw divider
+    let draw_divider = |img: &mut RgbImage, y_pos: &mut f32| {
+        let y_int = *y_pos as i32;
+        draw_line_segment_mut(img, (20.0, y_int as f32), ((width - 20) as f32, y_int as f32), gray);
+        *y_pos += 25.0;
+    };
+    
+    // Header
+    draw_centered_text(&mut img, "متجر عينة", y, 32.0);
+    y += 45.0;
+    
+    draw_centered_text(&mut img, "123 شارع الرئيسي", y, 18.0);
+    y += 35.0;
+    
+    draw_divider(&mut img, &mut y);
+    
+    // Items header
+    draw_centered_text(&mut img, "الأصناف", y, 24.0);
+    y += 35.0;
+    
+    draw_divider(&mut img, &mut y);
+    
+    // Items
+    for item in &items {
+        draw_right_text(&mut img, item.name_ar, y, 22.0);
+        y += 30.0;
+        
+        let item_line = format!("{}x @ {:.2} ج.م = {:.2} ج.م", 
+            item.quantity, item.price, item.total());
+        draw_centered_text(&mut img, &item_line, y, 18.0);
+        y += 35.0;
+    }
+    
+    y += 10.0;
+    draw_divider(&mut img, &mut y);
+    
+    // Totals
+    let subtotal_text = format!("المجموع الفرعي: {:.2} ج.م", subtotal);
+    draw_right_text(&mut img, &subtotal_text, y, 18.0);
+    y += 30.0;
+    
+    let tax_text = format!("الضريبة (10٪): {:.2} ج.م", tax);
+    draw_right_text(&mut img, &tax_text, y, 18.0);
+    y += 35.0;
+    
+    draw_divider(&mut img, &mut y);
+    
+    let total_text = format!("الإجمالي: {:.2} ج.م", total);
+    draw_right_text(&mut img, &total_text, y, 26.0);
+    y += 40.0;
+    
+    draw_divider(&mut img, &mut y);
+    
+    // Footer
+    draw_centered_text(&mut img, "شكراً لك على الشراء!", y, 22.0);
+    y += 30.0;
+    
+    draw_centered_text(&mut img, "نتمنى رؤيتك مرة أخرى", y, 18.0);
+    y += 40.0;
+    
+    // Trim image to actual height
+    height = (y as u32).min(height);
+    let img = image::imageops::crop_imm(&img, 0, 0, width, height).to_image();
+    
+    // Save to desktop
     let desktop = dirs::desktop_dir()
         .ok_or_else(|| "Could not find desktop directory".to_string())?;
     
-    // Generate filename with timestamp
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -229,8 +324,7 @@ fn save_receipt_image(image_data: String) -> Result<String, String> {
     let filename = format!("receipt_{}.png", timestamp);
     let filepath = desktop.join(&filename);
     
-    // Write file
-    fs::write(&filepath, image_bytes)
+    img.save(&filepath)
         .map_err(|e| format!("Failed to save image: {}", e))?;
     
     Ok(format!("✅ Receipt saved to Desktop: {}", filename))
@@ -248,7 +342,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             print_receipt,
             get_receipt_data,
-            save_receipt_image,
+            generate_receipt_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
