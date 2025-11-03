@@ -95,7 +95,7 @@ async fn print_receipt() -> Result<String, String> {
     let port = normalize_com_port(&get_com_port());
     let baud = get_baud_rate();
     
-    let driver = SerialPortDriver::open(&port, baud)
+    let driver = SerialPortDriver::open(&port, baud, None)
         .map_err(|e| format!("Failed to open printer on {} @{}: {}", port, baud, e))?;
 
     let printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()));
