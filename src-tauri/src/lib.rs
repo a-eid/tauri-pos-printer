@@ -1,11 +1,8 @@
-use encoding_rs::WINDOWS_1256;
-use escpos::{errors::Result as EscposResult, printer::Printer, printer_options::PrinterOptions, utils::*};
-#[cfg(feature = "serial_port")]
-use escpos::driver::SerialPortDriver;
+use escpos::{driver::SerialPortDriver, errors::Result as EscposResult, printer::Printer, printer_options::PrinterOptions, utils::*};
 use image::{ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_line_segment_mut, draw_text_mut};
+use ab_reshaper::reshape_line;
 use ab_glyph::{FontRef, PxScale};
-use ar_reshaper::reshape_line;
 
 // ============================================================================
 // Configuration
@@ -49,15 +46,6 @@ fn normalize_com_port(port: &str) -> String {
     }
 }
 
-fn encode_arabic(text: &str) -> Vec<u8> {
-    let (encoded, _, _) = WINDOWS_1256.encode(text);
-    encoded.to_vec()
-}
-
-fn reverse_for_display(text: &str) -> String {
-    text.chars().rev().collect()
-}
-
 // ============================================================================
 // Receipt Data
 // ============================================================================
@@ -94,8 +82,7 @@ fn calculate_totals() -> (f64, f64, f64) {
 // Tauri Commands
 // ============================================================================
 
-#[cfg_attr(feature = "serial_port", tauri::command)]
-#[cfg(feature = "serial_port")]
+#[tauri::command]
 async fn print_receipt() -> Result<String, String> {
     let port = normalize_com_port(&get_com_port());
     let baud = get_baud_rate();
@@ -103,13 +90,14 @@ async fn print_receipt() -> Result<String, String> {
     let driver = SerialPortDriver::open(&port, baud, None)
         .map_err(|e| format!("Failed to open printer on {} @{}: {}", port, baud, e))?;
 
-    // Use PC864 (Arabic) and pre-shape text for reliability.
+    // NCR 7197 (ESC/POS compatible): use PC864 and pre-shape lines.
     let opts = PrinterOptions::new(Some(PageCode::PC864), None, 42);
 
     let mut p = Printer::new(driver, Protocol::default(), Some(opts))
         .debug_mode(None)
         .init().map_err(|e| e.to_string())?
-        // ESC t 37 => PC864 on Epson/NCR ESC/POS
+        // Force code page in case firmware ignores options
+        // ESC t 37 => PC864 (Arabic)
         .custom(&[0x1B, 0x74, 37])?
         .justify(JustifyMode::CENTER)?;
 
@@ -129,17 +117,11 @@ async fn print_receipt() -> Result<String, String> {
     }
 }
 
-#[cfg_attr(not(feature = "serial_port"), tauri::command)]
-#[cfg(not(feature = "serial_port"))]
-async fn print_receipt() -> Result<String, String> {
-    Err("This build was compiled without the 'serial_port' feature for escpos. Enable it in Cargo.toml for serial printers.".into())
-}
-
 #[tauri::command]
 fn get_receipt_data() -> Result<serde_json::Value, String> {
     let items = get_receipt_items();
     let (subtotal, tax, total) = calculate_totals();
-    
+
     Ok(serde_json::json!({
         "header": {
             "storeName": "متجر عينة",
@@ -169,25 +151,25 @@ fn get_receipt_data() -> Result<serde_json::Value, String> {
 fn generate_receipt_image() -> Result<String, String> {
     let items = get_receipt_items();
     let (subtotal, tax, total) = calculate_totals();
-    
+
     // Image dimensions (80mm = 576px at 72 DPI)
     let width = 576u32;
     let mut height = 800u32;
-    
+
     // Create white background
     let mut img: RgbImage = ImageBuffer::from_pixel(width, height, Rgb([255u8, 255u8, 255u8]));
-    
+
     // Load Noto Sans Arabic font
     let font_data = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
     let font = FontRef::try_from_slice(font_data)
         .map_err(|e| format!("Failed to load font: {}", e))?;
-    
+
     let black = Rgb([0u8, 0u8, 0u8]);
     let gray = Rgb([128u8, 128u8, 128u8]);
-    
+
     let mut y = 30.0f32;
     let right_x = (width - 40) as i32;
-    
+
     // Helper to draw text centered
     let draw_centered_text = |img: &mut RgbImage, text: &str, y_pos: f32, scale: f32| {
         let scale = PxScale::from(scale);
@@ -195,7 +177,7 @@ fn generate_receipt_image() -> Result<String, String> {
         let x = (width as f32 / 2.0 - text_width / 2.0) as i32;
         draw_text_mut(img, black, x.max(20), y_pos as i32, scale, &font, text);
     };
-    
+
     // Helper to draw text right-aligned
     let draw_right_text = |img: &mut RgbImage, text: &str, y_pos: f32, scale: f32| {
         let scale_obj = PxScale::from(scale);
@@ -203,85 +185,85 @@ fn generate_receipt_image() -> Result<String, String> {
         let x = (right_x as f32 - text_width) as i32;
         draw_text_mut(img, black, x.max(20), y_pos as i32, scale_obj, &font, text);
     };
-    
+
     // Helper to draw divider
     let draw_divider = |img: &mut RgbImage, y_pos: &mut f32| {
         let y_int = *y_pos as i32;
         draw_line_segment_mut(img, (20.0, y_int as f32), ((width - 20) as f32, y_int as f32), gray);
         *y_pos += 25.0;
     };
-    
+
     // Header
     draw_centered_text(&mut img, "متجر عينة", y, 32.0);
     y += 45.0;
-    
+
     draw_centered_text(&mut img, "123 شارع الرئيسي", y, 18.0);
     y += 35.0;
-    
+
     draw_divider(&mut img, &mut y);
-    
+
     // Items header
     draw_centered_text(&mut img, "الأصناف", y, 24.0);
     y += 35.0;
-    
+
     draw_divider(&mut img, &mut y);
-    
+
     // Items
     for item in &items {
         draw_right_text(&mut img, item.name_ar, y, 22.0);
         y += 30.0;
-        
-        let item_line = format!("{}x @ {:.2} ج.م = {:.2} ج.م", 
+
+        let item_line = format!("{}x @ {:.2} ج.م = {:.2} ج.م",
             item.quantity, item.price, item.total());
         draw_centered_text(&mut img, &item_line, y, 18.0);
         y += 35.0;
     }
-    
+
     y += 10.0;
     draw_divider(&mut img, &mut y);
-    
+
     // Totals
     let subtotal_text = format!("المجموع الفرعي: {:.2} ج.م", subtotal);
     draw_right_text(&mut img, &subtotal_text, y, 18.0);
     y += 30.0;
-    
+
     let tax_text = format!("الضريبة (10٪): {:.2} ج.م", tax);
     draw_right_text(&mut img, &tax_text, y, 18.0);
     y += 35.0;
-    
+
     draw_divider(&mut img, &mut y);
-    
+
     let total_text = format!("الإجمالي: {:.2} ج.م", total);
     draw_right_text(&mut img, &total_text, y, 26.0);
     y += 40.0;
-    
+
     draw_divider(&mut img, &mut y);
-    
+
     // Footer
     draw_centered_text(&mut img, "شكراً لك على الشراء!", y, 22.0);
     y += 30.0;
-    
+
     draw_centered_text(&mut img, "نتمنى رؤيتك مرة أخرى", y, 18.0);
     y += 40.0;
-    
+
     // Trim image to actual height
     height = (y as u32).min(height);
     let img = image::imageops::crop_imm(&img, 0, 0, width, height).to_image();
-    
+
     // Save to desktop
     let desktop = dirs::desktop_dir()
         .ok_or_else(|| "Could not find desktop directory".to_string())?;
-    
+
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
     let filename = format!("receipt_{}.png", timestamp);
     let filepath = desktop.join(&filename);
-    
+
     img.save(&filepath)
         .map_err(|e| format!("Failed to save image: {}", e))?;
-    
+
     Ok(format!("✅ Receipt saved to Desktop: {}", filename))
 }
 
