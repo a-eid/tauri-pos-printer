@@ -1,5 +1,5 @@
 use encoding_rs::WINDOWS_1256;
-use escpos::{driver::SerialDriver, errors::Result as EscposResult, printer::Printer, printer_options::PrinterOptions, utils::*};
+use escpos::{driver::SerialPortDriver, errors::Result as EscposResult, printer::Printer, printer_options::PrinterOptions, utils::*};
 
 // ============================================================================
 // Configuration
@@ -95,7 +95,7 @@ async fn print_receipt() -> Result<String, String> {
     let port = normalize_com_port(&get_com_port());
     let baud = get_baud_rate();
     
-    let driver = SerialDriver::open(&port, baud)
+    let driver = SerialPortDriver::open(&port, baud)
         .map_err(|e| format!("Failed to open printer on {} @{}: {}", port, baud, e))?;
 
     let printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()));
