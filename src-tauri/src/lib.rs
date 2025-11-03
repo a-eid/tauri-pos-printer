@@ -98,9 +98,12 @@ async fn print_receipt() -> Result<String, String> {
     let driver = SerialPortDriver::open(&port, baud, None)
         .map_err(|e| format!("Failed to open printer on {} @{}: {}", port, baud, e))?;
 
-    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()))
-        .debug_mode(Some(DebugMode::Hex));
+    // Build printer in steps to avoid temporary value issues
+    let protocol = Protocol::default();
+    let options = PrinterOptions::default();
     
+    let printer = Printer::new(driver, protocol, Some(options));
+    let printer = printer.debug_mode(Some(DebugMode::Hex));
     let printer = printer.init().map_err(|e| e.to_string())?;
     
     let mut cmd: Vec<u8> = Vec::new();
