@@ -819,11 +819,112 @@ fn print_receipt_silent(printer_name: String) -> Result<String, String> {
     Ok(format!("✅ Receipt sent to printer! Check printer queue if nothing prints. (Job may be processing EMF data)"))
 }
 
+// ============================
+// escpos-rs: Network printing
+// ============================
+
+#[tauri::command]
+async fn escpos_print_text_ar(host: String, port: u16) -> Result<String, String> {
+    use escpos::printer::Printer;
+    use escpos::printer_options::PrinterOptions;
+    use escpos::utils::*;
+    use escpos::{driver::NetworkDriver, errors::Result as EscposResult};
+
+    // Connect to printer over TCP (e.g., 9100)
+    let driver = NetworkDriver::open(&host, port, None)
+        .map_err(|e| format!("Failed to open network printer {}:{} - {}", host, port, e))?;
+
+    // Build a small Arabic sample – this will likely not render correctly as TEXT due to missing Arabic codepages
+    // in the crate's built-in PageCode list, but we want to 'see what happens' per the experiment.
+    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()));
+    let res: EscposResult<()> = printer
+        .debug_mode(Some(DebugMode::Hex))
+        .init()
+        .and_then(|p| p.justify(JustifyMode::CENTER))
+        .and_then(|p| p.writeln("متجر عينة"))
+        .and_then(|p| p.writeln("123 شارع الرئيسي"))
+        .and_then(|p| p.feed())
+        .and_then(|p| p.writeln("الأصناف"))
+        .and_then(|p| p.feed())
+        .and_then(|p| p.justify(JustifyMode::RIGHT))
+        .and_then(|p| p.writeln("تفاح"))
+        .and_then(|p| p.writeln("2x @ 2.50 ج.م = 5.00 ج.م"))
+        .and_then(|p| p.writeln("موز"))
+        .and_then(|p| p.writeln("3x @ 1.50 ج.م = 4.50 ج.م"))
+        .and_then(|p| p.writeln("برتقال"))
+        .and_then(|p| p.writeln("1x @ 3.00 ج.م = 3.00 ج.م"))
+        .and_then(|p| p.feed())
+        .and_then(|p| p.justify(JustifyMode::CENTER))
+        .and_then(|p| p.bold(true))
+        .and_then(|p| p.writeln("الإجمالي: 7.70 ج.م"))
+        .and_then(|p| p.bold(false))
+        .and_then(|p| p.feed())
+        .and_then(|p| p.writeln("شكراً لك على الشراء!"))
+    .and_then(|p| p.feed())
+    .and_then(|p| p.print_cut())
+    .map(|_| ());
+
+    match res {
+        Ok(_) => Ok(format!("✅ Sent text sample via escpos-rs to {}:{} (bytes logged in HEX)." , host, port)),
+        Err(e) => Err(format!("Failed to print via escpos-rs: {}", e)),
+    }
+}
+
+#[tauri::command]
+async fn escpos_print_image(host: String, port: u16, image_data_url: String) -> Result<String, String> {
+    use base64::{engine::general_purpose, Engine as _};
+    use escpos::printer::Printer;
+    use escpos::printer_options::PrinterOptions;
+    use escpos::utils::*;
+    use escpos::{driver::NetworkDriver, errors::Result as EscposResult};
+
+    // Extract base64 from data URL
+    let base64_data = image_data_url
+        .strip_prefix("data:image/png;base64,")
+        .ok_or("Invalid image data URL format")?;
+    let png_bytes = general_purpose::STANDARD
+        .decode(base64_data)
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+
+    // Connect network driver
+    let driver = NetworkDriver::open(&host, port, None)
+        .map_err(|e| format!("Failed to open network printer {}:{} - {}", host, port, e))?;
+
+    // Print as raster image using graphics feature – best bet for Arabic correctness
+    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()));
+    let res: EscposResult<()> = printer
+        .debug_mode(Some(DebugMode::Hex))
+        .init()
+        .and_then(|p| p.justify(JustifyMode::CENTER))
+        .and_then(|p| p.bit_image_from_bytes_option(
+            &png_bytes,
+            BitImageOption::new(Some(576), None, BitImageSize::Normal)?
+        ))
+        .and_then(|p| p.feed())
+        .and_then(|p| p.print_cut())
+        .map(|_| ());
+
+    match res {
+        Ok(_) => Ok(format!("✅ Sent raster image via escpos-rs to {}:{} (width max 576px).", host, port)),
+        Err(e) => Err(format!("Failed to print image via escpos-rs: {}", e)),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, get_thermal_printers, print_receipt, print_receipt_image, print_receipt_html, print_receipt_text_mode, print_receipt_silent])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            get_thermal_printers,
+            print_receipt,
+            print_receipt_image,
+            print_receipt_html,
+            print_receipt_text_mode,
+            print_receipt_silent,
+            escpos_print_text_ar,
+            escpos_print_image,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

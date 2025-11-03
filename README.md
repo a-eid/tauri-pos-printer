@@ -234,3 +234,19 @@ See [THERMAL_PRINTER_GUIDE.md](THERMAL_PRINTER_GUIDE.md) for more troubleshootin
 ---
 
 **Built with ❤️ using Tauri**
+
+## 🌐 ESC/POS (Network) experiment
+
+This app includes an optional experiment to print directly to a networked thermal printer using the `escpos` Rust crate.
+
+- Where to find it: in the UI under "ESC/POS (Network) experiment)"
+- How it works:
+  - Text path: sends Arabic text via ESC/POS. The crate currently lacks Arabic page codes (e.g., PC864/WIN-1256), so text may appear as gibberish on some devices. This button is meant to observe your device’s behavior.
+  - Image path: renders the Arabic receipt as a PNG on the frontend and prints it as a raster image via ESC/POS. This should print correctly on any ESC/POS-compatible printer.
+  - Expected port: 9100 (raw), configurable in the UI.
+
+Steps:
+1) Enter your printer IP/host and port (default: 9100).
+2) Click "📝 escpos Text" (observe behavior) or "🖼️ escpos Image" (expected correct Arabic display).
+
+Note: We build release artifacts on GitHub Actions. If you don’t have local Rust/Cargo, push your changes and download the artifact from the workflow run to test on Windows.

@@ -13,6 +13,8 @@ function App() {
 	const [selectedPrinter, setSelectedPrinter] = useState<string>("");
 	const [message, setMessage] = useState<string>("");
 	const [loading, setLoading] = useState<boolean>(false);
+  const [escposHost, setEscposHost] = useState<string>("");
+  const [escposPort, setEscposPort] = useState<number>(9100);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: loadPrinters is not a dependency of this effect
 	useEffect(() => {
@@ -206,6 +208,90 @@ function App() {
 		}
 	}
 
+	// ============ escpos-rs (Network) experiments ============
+	const escposPrintText = async () => {
+		if (!escposHost || !escposPort) {
+			setMessage("Please enter printer IP/Host and port (default 9100).");
+			return;
+		}
+		try {
+			setLoading(true);
+			setMessage("Sending Arabic text via escpos-rs (network)...");
+			const result = await invoke<string>("escpos_print_text_ar", {
+				host: escposHost,
+				port: escposPort,
+			});
+			setMessage(result);
+		} catch (error) {
+			setMessage(`Error (escpos text): ${error}`);
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	const escposPrintImage = async () => {
+		if (!escposHost || !escposPort) {
+			setMessage("Please enter printer IP/Host and port (default 9100).");
+			return;
+		}
+		try {
+			setLoading(true);
+			setMessage("Rendering receipt as image (RTL Arabic) and sending via escpos-rs...");
+
+			// Reuse the same HTML-render-to-canvas routine
+			const container = document.createElement("div");
+			container.style.cssText = `
+				position: fixed;
+				left: -9999px;
+				top: 0;
+				width: 576px;
+				background: white;
+				padding: 20px;
+				font-family: 'Arial', 'Tahoma', sans-serif;
+				direction: rtl;
+				text-align: center;
+			`;
+			container.innerHTML = `
+				<div style="font-size: 24px; font-weight: bold; margin: 10px 0;">متجر عينة</div>
+				<div style="font-size: 14px; margin: 5px 0;">123 شارع الرئيسي</div>
+				<div style="font-size: 14px; margin: 5px 0;">المدينة، المحافظة 12345</div>
+				<div style="font-size: 14px; margin: 5px 0;">هاتف: (555) 123-4567</div>
+				<div style="margin: 15px 0; border-top: 2px dashed #000;"></div>
+				<div style="font-size: 16px; font-weight: bold; margin: 10px 0;">الأصناف</div>
+				<div style="margin: 10px 0; border-top: 2px dashed #000;"></div>
+				<div style="text-align: right; font-size: 16px; font-weight: bold; margin: 8px 0;">تفاح</div>
+				<div style="text-align: center; font-size: 14px; margin: 5px 0;">2x @ 2.50 ج.م = 5.00 ج.م</div>
+				<div style="text-align: right; font-size: 16px; font-weight: bold; margin: 8px 0;">موز</div>
+				<div style="text-align: center; font-size: 14px; margin: 5px 0;">3x @ 1.50 ج.م = 4.50 ج.م</div>
+				<div style="text-align: right; font-size: 16px; font-weight: bold; margin: 8px 0;">برتقال</div>
+				<div style="text-align: center; font-size: 14px; margin: 5px 0;">1x @ 3.00 ج.م = 3.00 ج.م</div>
+				<div style="margin: 15px 0; border-top: 2px dashed #000;"></div>
+				<div style="text-align: right; font-size: 14px; margin: 5px 0;">المجموع الفرعي: 7.00 ج.م</div>
+				<div style="text-align: right; font-size: 14px; margin: 5px 0;">الضريبة (10٪): 0.70 ج.م</div>
+				<div style="margin: 10px 0; border-top: 2px dashed #000;"></div>
+				<div style="text-align: right; font-size: 20px; font-weight: bold; margin: 10px 0;">الإجمالي: 7.70 ج.م</div>
+				<div style="margin: 15px 0; border-top: 2px dashed #000;"></div>
+				<div style="font-size: 16px; font-weight: bold; margin: 10px 0;">شكراً لك على الشراء!</div>
+				<div style="font-size: 14px; margin: 5px 0;">نتمنى رؤيتك مرة أخرى</div>
+			`;
+			document.body.appendChild(container);
+			const canvas = await html2canvas(container, { backgroundColor: "#ffffff", scale: 2, logging: false });
+			const imageDataUrl = canvas.toDataURL("image/png");
+			document.body.removeChild(container);
+
+			const result = await invoke<string>("escpos_print_image", {
+				host: escposHost,
+				port: escposPort,
+				imageDataUrl,
+			});
+			setMessage(result);
+		} catch (error) {
+			setMessage(`Error (escpos image): ${error}`);
+		} finally {
+			setLoading(false);
+		}
+	};
+
 	return (
 		<main className="container">
 			<h1>Thermal POS Printer</h1>
@@ -308,6 +394,43 @@ function App() {
 						{message}
 					</div>
 				)}
+			</div>
+
+			<div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #eee' }}>
+				<h2 style={{ fontSize: 18, margin: '0 0 8px' }}>ESC/POS (Network) experiment</h2>
+				<p style={{ color: '#666', marginTop: 0, fontSize: 12 }}>
+					Uses escpos-rs to talk to the printer over TCP (e.g., port 9100). Text may not render Arabic due to code page limits; the image path should render Arabic correctly.
+				</p>
+				<div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+					<input
+						type="text"
+						placeholder="Printer IP/Host (e.g., 192.168.1.50)"
+						value={escposHost}
+						onChange={(e) => setEscposHost(e.target.value)}
+						disabled={loading}
+						style={{ flex: 1 }}
+					/>
+					<input
+						type="number"
+						placeholder="Port"
+						value={escposPort}
+						onChange={(e) => setEscposPort(Number(e.target.value))}
+						disabled={loading}
+						style={{ width: 100 }}
+					/>
+				</div>
+				<div className="secondary-buttons" style={{ display: 'flex', gap: 8 }}>
+					<button type="button" className="print-btn-small secondary" disabled={loading || !escposHost}
+						onClick={escposPrintText}
+						title="Sends Arabic text via ESC/POS – likely gibberish, but we want to observe behavior">
+						{loading ? "..." : "📝 escpos Text"}
+					</button>
+					<button type="button" className="print-btn-small secondary" disabled={loading || !escposHost}
+						onClick={escposPrintImage}
+						title="Renders Arabic as PNG and prints via ESC/POS raster image">
+						{loading ? "..." : "🖼️ escpos Image"}
+					</button>
+				</div>
 			</div>
 		</main>
 	);
