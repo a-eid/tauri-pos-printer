@@ -1,18 +1,18 @@
 use encoding_rs::WINDOWS_1256;
-use escpos::{driver::SerialPortDriver, errors::Result as EscposResult, printer::Printer, printer_options::PrinterOptions, utils::*};
-use std::fs;
-use std::path::PathBuf;
+use escpos::{errors::Result as EscposResult, printer::Printer, printer_options::PrinterOptions, utils::*};
+#[cfg(feature = "serial_port")]
+use escpos::driver::SerialPortDriver;
 use image::{ImageBuffer, Rgb, RgbImage};
-use imageproc::drawing::{draw_text_mut, draw_line_segment_mut};
+use imageproc::drawing::{draw_line_segment_mut, draw_text_mut};
 use ab_glyph::{FontRef, PxScale};
+use ar_reshaper::reshape_line;
+
 // ============================================================================
 // Configuration
 // ============================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
 const DEFAULT_BAUD_RATE: u32 = 9600;
-const CODEPAGE_WIN1256: u8 = 28;
-const CONTEXTUAL_MODE: u8 = 5;
 
 // ============================================================================
 // Utilities
@@ -94,7 +94,8 @@ fn calculate_totals() -> (f64, f64, f64) {
 // Tauri Commands
 // ============================================================================
 
-#[tauri::command]
+#[cfg_attr(feature = "serial_port", tauri::command)]
+#[cfg(feature = "serial_port")]
 async fn print_receipt() -> Result<String, String> {
     let port = normalize_com_port(&get_com_port());
     let baud = get_baud_rate();
@@ -102,24 +103,36 @@ async fn print_receipt() -> Result<String, String> {
     let driver = SerialPortDriver::open(&port, baud, None)
         .map_err(|e| format!("Failed to open printer on {} @{}: {}", port, baud, e))?;
 
-    // IMPORTANT: requires escpos-rs with PC864 support
-    // Cargo.toml:
-    // escpos = { git = "https://github.com/fabienbellanger/escpos-rs", rev = "78a6302", features = ["serial_port"] }
-
+    // Use PC864 (Arabic) and pre-shape text for reliability.
     let opts = PrinterOptions::new(Some(PageCode::PC864), None, 42);
-    let res: EscposResult<()> = Printer::new(driver, Protocol::default(), Some(opts))
-        .debug_mode(Some(DebugMode::Hex))
-        .init()?
-        .justify(JustifyMode::CENTER)?
-        .writeln("متجر عينة")?            
-        .writeln("123 شارع الرئيسي")?     
-        .feed()?                          
-        .print_cut()?;                    
+
+    let mut p = Printer::new(driver, Protocol::default(), Some(opts))
+        .debug_mode(None)
+        .init().map_err(|e| e.to_string())?
+        // ESC t 37 => PC864 on Epson/NCR ESC/POS
+        .custom(&[0x1B, 0x74, 37])?
+        .justify(JustifyMode::CENTER)?;
+
+    // Minimal verification lines
+    let line1 = reshape_line("متجر عينة");
+    let line2 = reshape_line("اختبار الطباعة");
+
+    let res: EscposResult<()> = p
+        .writeln(&line1)?
+        .writeln(&line2)?
+        .feed()?
+        .print_cut()?;
 
     match res {
-        Ok(()) => Ok(format!("✅ Test (PC864) printed on {}", port)),
+        Ok(()) => Ok(format!("✅ Arabic test sent (PC864) on {}", port)),
         Err(e) => Err(format!("Failed to print: {}", e)),
     }
+}
+
+#[cfg_attr(not(feature = "serial_port"), tauri::command)]
+#[cfg(not(feature = "serial_port"))]
+async fn print_receipt() -> Result<String, String> {
+    Err("This build was compiled without the 'serial_port' feature for escpos. Enable it in Cargo.toml for serial printers.".into())
 }
 
 #[tauri::command]
@@ -178,7 +191,6 @@ fn generate_receipt_image() -> Result<String, String> {
     // Helper to draw text centered
     let draw_centered_text = |img: &mut RgbImage, text: &str, y_pos: f32, scale: f32| {
         let scale = PxScale::from(scale);
-        // Simple centering - not perfect but works
         let text_width = text.len() as f32 * scale.x * 0.5;
         let x = (width as f32 / 2.0 - text_width / 2.0) as i32;
         draw_text_mut(img, black, x.max(20), y_pos as i32, scale, &font, text);
