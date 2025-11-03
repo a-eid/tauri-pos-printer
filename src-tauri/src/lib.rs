@@ -1,265 +1,15 @@
-use printers::get_printers;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
-struct PrinterInfo {
-    name: String,
-    system_name: String,
-}
-
 // --- Utilities ---
-
-// Encode UTF-8 into Windows-1256 bytes
 fn encode_windows_1256(text: &str) -> Vec<u8> {
     use encoding_rs::WINDOWS_1256;
     let (encoded, _, _) = WINDOWS_1256.encode(text);
     encoded.to_vec()
 }
 
-// Naive visual RTL reversal for quick tests (no shaping)
 fn rtl_visual(s: &str) -> String {
     s.chars().rev().collect::<String>()
 }
-
-// --- Tauri commands (stable set) ---
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[tauri::command]
-fn get_thermal_printers() -> Result<Vec<PrinterInfo>, String> {
-    let printers = get_printers();
-
-    // Filter for thermal printers - look for common thermal printer keywords
-    let thermal_keywords = vec![
-        "thermal", "pos", "receipt", "tm-", "tsp", "rp", "star",
-        "epson", "bixolon", "zebra", "citizen", "rongta", "xprinter",
-    ];
-
-    let thermal_printers: Vec<PrinterInfo> = printers
-        .into_iter()
-        .filter(|p| {
-            let name_lower = p.name.to_lowercase();
-            thermal_keywords
-                .iter()
-                .any(|keyword| name_lower.contains(keyword))
-        })
-        .map(|p| PrinterInfo {
-            name: p.name.clone(),
-            system_name: p.name.clone(),
-        })
-        .collect();
-
-    Ok(thermal_printers)
-}
-
-// ============================
-// escpos-rs (Network): Arabic
-// ============================
-
-#[tauri::command]
-async fn escpos_print_text_ar(host: String, port: u16) -> Result<String, String> {
-    use escpos::printer::Printer;
-    use escpos::printer_options::PrinterOptions;
-    use escpos::utils::*;
-    use escpos::{driver::NetworkDriver, errors::Result as EscposResult};
-
-    let driver = NetworkDriver::open(&host, port, None)
-        .map_err(|e| format!("Failed to open network printer {}:{} - {}", host, port, e))?;
-
-    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()));
-    let res: EscposResult<()> = printer
-        .debug_mode(Some(DebugMode::Hex))
-        .init()
-        .and_then(|p| p.justify(JustifyMode::CENTER))
-        .and_then(|p| p.writeln("متجر عينة"))
-        .and_then(|p| p.writeln("123 شارع الرئيسي"))
-        .and_then(|p| p.feed())
-        .and_then(|p| p.justify(JustifyMode::RIGHT))
-        .and_then(|p| p.writeln("تفاح"))
-        .and_then(|p| p.writeln("2x @ 2.50 ج.م = 5.00 ج.م"))
-        .and_then(|p| p.writeln("موز"))
-        .and_then(|p| p.writeln("3x @ 1.50 ج.م = 4.50 ج.م"))
-        .and_then(|p| p.writeln("برتقال"))
-        .and_then(|p| p.writeln("1x @ 3.00 ج.م = 3.00 ج.م"))
-        .and_then(|p| p.feed())
-        .and_then(|p| p.justify(JustifyMode::CENTER))
-        .and_then(|p| p.bold(true))
-        .and_then(|p| p.writeln("الإجمالي: 7.70 ج.م"))
-        .and_then(|p| p.bold(false))
-        .and_then(|p| p.feed())
-        .and_then(|p| p.writeln("شكراً لك على الشراء!"))
-        .and_then(|p| p.feed())
-        .and_then(|p| p.print_cut())
-        .map(|_| ());
-
-    match res {
-        Ok(_) => Ok(format!(
-            "✅ Sent text sample via escpos-rs to {}:{} (bytes logged in HEX).",
-            host, port
-        )),
-        Err(e) => Err(format!("Failed to print via escpos-rs: {}", e)),
-    }
-}
-
-#[tauri::command]
-async fn escpos_print_image(host: String, port: u16, image_data_url: String) -> Result<String, String> {
-    use base64::{engine::general_purpose, Engine as _};
-    use escpos::printer::Printer;
-    use escpos::printer_options::PrinterOptions;
-    use escpos::utils::*;
-    use escpos::{driver::NetworkDriver, errors::Result as EscposResult};
-
-    let base64_data = image_data_url
-        .strip_prefix("data:image/png;base64,")
-        .ok_or("Invalid image data URL format")?;
-    let png_bytes = general_purpose::STANDARD
-        .decode(base64_data)
-        .map_err(|e| format!("Failed to decode base64: {}", e))?;
-
-    let driver = NetworkDriver::open(&host, port, None)
-        .map_err(|e| format!("Failed to open network printer {}:{} - {}", host, port, e))?;
-
-    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()));
-    let res: EscposResult<()> = printer
-        .debug_mode(Some(DebugMode::Hex))
-        .init()
-        .and_then(|p| p.justify(JustifyMode::CENTER))
-        .and_then(|p| p.bit_image_from_bytes_option(
-            &png_bytes,
-            BitImageOption::new(Some(576), None, BitImageSize::Normal)?
-        ))
-        .and_then(|p| p.feed())
-        .and_then(|p| p.print_cut())
-        .map(|_| ());
-
-    match res {
-        Ok(_) => Ok(format!(
-            "✅ Sent raster image via escpos-rs to {}:{} (width max 576px).",
-            host, port
-        )),
-        Err(e) => Err(format!("Failed to print image via escpos-rs: {}", e)),
-    }
-}
-
-// Try a specific ESC/POS code page (ESC t n) and optional NCR contextual mode (FS C m)
-// Sends a short Arabic sample encoded as Windows-1256 bytes.
-#[tauri::command]
-async fn escpos_print_text_ar_custom(
-    host: String,
-    port: u16,
-    codepage: u8,
-    contextual: Option<u8>,
-) -> Result<String, String> {
-    use escpos::printer::Printer;
-    use escpos::printer_options::PrinterOptions;
-    use escpos::utils::*;
-    use escpos::{driver::NetworkDriver, errors::Result as EscposResult};
-
-    let driver = NetworkDriver::open(&host, port, None)
-        .map_err(|e| format!("Failed to open network printer {}:{} - {}", host, port, e))?;
-
-    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()));
-    let mut cmd: Vec<u8> = vec![];
-    cmd.extend_from_slice(&[0x1B, 0x40]); // ESC @ init (once)
-    cmd.extend_from_slice(&[0x1B, 0x74, codepage]); // ESC t n
-    if let Some(m) = contextual {
-        cmd.extend_from_slice(&[0x1C, 0x43, m]); // FS C m
-    }
-    cmd.extend_from_slice(&[0x1B, 0x61, 0x01]); // center
-    cmd.extend_from_slice(format!("CP {} / Ctx {:?}\n", codepage, contextual).as_bytes());
-    cmd.extend_from_slice(&encode_windows_1256("متجر عينة"));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(&encode_windows_1256("123 شارع الرئيسي"));
-    cmd.extend_from_slice(b"\n\n");
-    cmd.extend_from_slice(&[0x1B, 0x61, 0x02]); // right
-    cmd.extend_from_slice(&encode_windows_1256("تفاح"));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(&encode_windows_1256("2x @ 2.50 ج.م = 5.00 ج.م"));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(&encode_windows_1256("موز"));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(&encode_windows_1256("3x @ 1.50 ج.م = 4.50 ج.م"));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(&encode_windows_1256("برتقال"));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(&encode_windows_1256("1x @ 3.00 ج.م = 3.00 ج.م"));
-    cmd.extend_from_slice(b"\n\n");
-    cmd.extend_from_slice(&[0x1D, 0x56, 0x00]); // cut
-
-    let res: EscposResult<()> = printer
-        .debug_mode(Some(DebugMode::Hex))
-        .init()
-        .and_then(|p| p.custom(&cmd))
-        .and_then(|p| p.print())
-        .map(|_| ());
-    match res {
-        Ok(_) => Ok(format!("✅ Sent with CP {} and contextual {:?}", codepage, contextual)),
-        Err(e) => Err(format!("Failed to send custom Arabic test: {}", e)),
-    }
-}
-
-// Sweep through a curated set of ESC t code page values (and optional contextual mode)
-#[tauri::command]
-async fn escpos_arabic_sweep(host: String, port: u16, try_contextual: bool) -> Result<String, String> {
-    use escpos::printer::Printer;
-    use escpos::printer_options::PrinterOptions;
-    use escpos::utils::*;
-    use escpos::{driver::NetworkDriver, errors::Result as EscposResult};
-
-    let driver = NetworkDriver::open(&host, port, None)
-        .map_err(|e| format!("Failed to open network printer {}:{} - {}", host, port, e))?;
-
-    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()));
-    let candidates: &[u8] = &[0, 2, 3, 17, 18, 27, 28, 29, 30, 33, 34, 61];
-    let contextuals: &[Option<u8>] = if try_contextual { &[None, Some(5)] } else { &[None] };
-
-    let mut all_ok = true;
-    let mut p = printer
-        .debug_mode(Some(DebugMode::Hex))
-        .init()
-        .map_err(|e| e.to_string())?;
-    p = p.justify(JustifyMode::LEFT).map_err(|e| e.to_string())?;
-    p = p
-        .writeln("ESC/POS Arabic sweep (Windows-1256 bytes)")
-        .map_err(|e| e.to_string())?;
-    p = p.writeln("---").map_err(|e| e.to_string())?;
-
-    for &cp in candidates {
-        for &ctx in contextuals {
-            let mut block: Vec<u8> = vec![];
-            block.extend_from_slice(&[0x1B, 0x74, cp]); // ESC t cp
-            if let Some(m) = ctx {
-                block.extend_from_slice(&[0x1C, 0x43, m]); // FS C m
-            }
-            block.extend_from_slice(b"\n");
-            block.extend_from_slice(format!("CP {} / Ctx {:?}\n", cp, ctx).as_bytes());
-            block.extend_from_slice(&encode_windows_1256("متجر عينة"));
-            block.extend_from_slice(b"\n");
-            block.extend_from_slice(&encode_windows_1256("123 شارع الرئيسي"));
-            block.extend_from_slice(b"\n\n");
-            p = p.custom(&block).map_err(|e| e.to_string())?;
-        }
-    }
-
-    let p = p.feed().map_err(|e| e.to_string())?;
-    let res: EscposResult<()> = p.print_cut().map(|_| ());
-    if res.is_err() {
-        all_ok = false;
-    }
-
-    if all_ok {
-        Ok("✅ Sweep sent. Inspect which CP/Contextual renders Arabic correctly.".into())
-    } else {
-        Err("Sweep encountered an error near the end (but some lines may have printed).".into())
-    }
-}
-
-// ============================
-// escpos-rs (Serial / COM)
-// ============================
 
 fn normalize_win_com(port: &str) -> String {
     #[cfg(windows)]
@@ -366,97 +116,62 @@ async fn escpos_print_text_ar_custom_serial(
     .map_err(|e| format!("Serial print failed: {}", e))
 }
 
-// ============================
-// escpos-rs demo (formatting)
-// ============================
-
+// Serial sweep to try multiple ESC t code pages (and optional contextual FS C 5)
 #[tauri::command]
-async fn escpos_demo_format_ar(host: String, port: u16) -> Result<String, String> {
-    use escpos::printer::Printer;
-    use escpos::printer_options::PrinterOptions;
-    use escpos::utils::*;
-    use escpos::{driver::NetworkDriver, errors::Result as EscposResult};
+async fn escpos_arabic_sweep_serial(
+    port: Option<String>,
+    baud: Option<u32>,
+    try_contextual: bool,
+) -> Result<String, String> {
+    use escpos::{driver::SerialDriver, errors::Result as ER, printer::Printer, printer_options::PrinterOptions, utils::*};
+    let (port_final, baud_final) = read_com_cfg(port, baud);
+    let driver = SerialDriver::open(&port_final, baud_final)
+        .map_err(|e| format!("Open serial {} @{} failed: {}", port_final, baud_final, e))?;
 
-    let driver = NetworkDriver::open(&host, port, None)
-        .map_err(|e| format!("Failed to open network printer {}:{} - {}", host, port, e))?;
-    let res: EscposResult<()> =
-        Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()))
-            .debug_mode(Some(DebugMode::Dec))
-            .init()
-            .and_then(|p| p.smoothing(true))
-            .and_then(|p| p.bold(true))
-            .and_then(|p| p.underline(UnderlineMode::Single))
-            .and_then(|p| p.writeln("مرحبا بالعالم"))
-            .and_then(|p| p.justify(JustifyMode::CENTER))
-            .and_then(|p| p.reverse(true))
-            .and_then(|p| p.bold(false))
-            .and_then(|p| p.writeln("مرحبا بالعالم"))
-            .and_then(|p| p.feed())
-            .and_then(|p| p.justify(JustifyMode::RIGHT))
-            .and_then(|p| p.reverse(false))
-            .and_then(|p| p.underline(UnderlineMode::None))
-            .and_then(|p| p.size(2, 3))
-            .and_then(|p| p.writeln("مرحبا بالعالم"))
-            .and_then(|p| p.print_cut())
-            .map(|_| ());
+    let mut p = Printer::new(driver, Protocol::default(), Some(PrinterOptions::default()))
+        .debug_mode(Some(DebugMode::Hex));
+    let mut p = p.init().map_err(|e| e.to_string())?;
+    p = p.justify(JustifyMode::LEFT).map_err(|e| e.to_string())?;
+    p = p.writeln("ESC/POS Arabic sweep (Windows-1256 over Serial)").map_err(|e| e.to_string())?;
+    p = p.writeln("---").map_err(|e| e.to_string())?;
 
+    let candidates: &[u8] = &[0, 2, 3, 17, 18, 27, 28, 29, 30, 33, 34, 61];
+    let contextuals: &[Option<u8>] = if try_contextual { &[None, Some(5)] } else { &[None] };
+
+    for &cp in candidates {
+        for &ctx in contextuals {
+            let mut block: Vec<u8> = vec![0x1B, 0x74, cp];
+            if let Some(m) = ctx { block.extend_from_slice(&[0x1C, 0x43, m]); }
+            block.extend_from_slice(b"\n");
+            block.extend_from_slice(format!("CP {} / Ctx {:?}\n", cp, ctx).as_bytes());
+            block.extend_from_slice(&encode_windows_1256("متجر عينة")); block.extend_from_slice(b"\n");
+            block.extend_from_slice(&encode_windows_1256("123 شارع الرئيسي")); block.extend_from_slice(b"\n\n");
+            p = p.custom(&block).map_err(|e| e.to_string())?;
+        }
+    }
+
+    let res: ER<()> = p.feed().and_then(|p| p.print_cut()).map(|_| ());
     match res {
-        Ok(_) => Ok("✅ escpos demo (Arabic) sent.".into()),
-        Err(e) => Err(format!("escpos demo failed: {}", e)),
+        Ok(_) => Ok(format!("✅ Serial sweep sent on {} @{}.", port_final, baud_final)),
+        Err(e) => Err(format!("Serial sweep failed: {}", e)),
     }
 }
 
 // ============================
-// Stubs for older commands used by UI (avoid build break)
+// Minimal base commands
 // ============================
 
 #[tauri::command]
-fn print_receipt(_printer_name: String) -> Result<String, String> {
-    Err("Disabled in this build. Use ESC/POS demo or custom Arabic commands.".into())
-}
-
-#[tauri::command]
-async fn print_receipt_image(_printer_name: String, _image_data_url: String) -> Result<String, String> {
-    Err("Disabled in this build. Use ESC/POS image command.".into())
-}
-
-#[tauri::command]
-async fn print_receipt_html(_app: tauri::AppHandle, _printer_name: String) -> Result<String, String> {
-    Err("Disabled in this build.".into())
-}
-
-#[tauri::command]
-fn print_receipt_text_mode(_printer_name: String) -> Result<String, String> {
-    Err("Disabled in this build.".into())
-}
-
-#[tauri::command]
-fn print_receipt_silent(_printer_name: String) -> Result<String, String> {
-    Err("Disabled in this build.".into())
-}
+fn greet(name: &str) -> String { format!("Hello, {}!", name) }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            // stable
             greet,
-            get_thermal_printers,
-            // escpos-rs network
-            escpos_print_text_ar,
-            escpos_print_image,
-            escpos_print_text_ar_custom,
-            escpos_arabic_sweep,
-            escpos_demo_format_ar,
-            // escpos-rs serial
             escpos_print_text_ar_custom_serial,
-            // stubs for legacy UI buttons
-            print_receipt,
-            print_receipt_image,
-            print_receipt_html,
-            print_receipt_text_mode,
-            print_receipt_silent,
+            escpos_arabic_sweep_serial,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
