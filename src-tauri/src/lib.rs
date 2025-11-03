@@ -134,24 +134,27 @@ async fn print_receipt() -> Result<String, String> {
         .map_err(|e| format!("Failed to open printer on {} @{}: {}", port, baud, e))?;
 
     // NCR 7197 (ESC/POS compatible): use PC864 and pre-shape lines.
-    let opts = PrinterOptions::new(Some(PageCode::PC864), None, 42);
+    let mut printer = Printer::new(driver, Protocol::default(), Some(PrinterOptions::new(Some(PageCode::PC864), None, 42)))
+        .debug_mode(None);
 
-    let mut p = Printer::new(driver, Protocol::default(), Some(opts))
-        .debug_mode(None)
-        .init().map_err(|e| e.to_string())?
-        // Force code page in case firmware ignores options: ESC t 37 => PC864
-        .custom(&[0x1B, 0x74, 37])?
-        .justify(JustifyMode::CENTER)?;
+    // init() returns EscposResult<&mut Printer>, convert error to String only here
+    let printer = printer.init().map_err(|e| e.to_string())?;
 
     let line1 = reshape_line("متجر عينة");
     let line2 = reshape_line("اختبار الطباعة");
 
-    let res: EscposResult<()> = p
-        .writeln(&line1)?
-        .writeln(&line2)?
-        .feed()?
-        .print_cut()?;
-
+    // Chain with and_then to keep EscposResult throughout, then convert once at the end
+    let res: EscposResult<()> = printer
+        // Force code page in case firmware ignores options: ESC t 37 => PC864
+        .custom(&[0x1B, 0x74, 37])
+        .and_then(|p| p.justify(JustifyMode::CENTER))
+        .and_then(|p| p.writeln(&line1))
+        .and_then(|p| p.writeln(&line2))
+        .and_then(|p| p.feed())
+        .and_then(|p| p.print_cut())
+        .and_then(|p| p.print())
+        .map(|_| ());
+    
     match res {
         Ok(()) => Ok(format!("✅ Arabic test sent (PC864) on {}", port)),
         Err(e) => Err(format!("Failed to print: {}", e)),
