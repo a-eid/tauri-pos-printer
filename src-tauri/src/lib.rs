@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use image::{ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, draw_line_segment_mut};
 use ab_glyph::{FontRef, PxScale};
-
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -99,78 +98,26 @@ fn calculate_totals() -> (f64, f64, f64) {
 async fn print_receipt() -> Result<String, String> {
     let port = normalize_com_port(&get_com_port());
     let baud = get_baud_rate();
-    
+
     let driver = SerialPortDriver::open(&port, baud, None)
         .map_err(|e| format!("Failed to open printer on {} @{}: {}", port, baud, e))?;
 
-    // Build printer in steps to avoid temporary value issues
-    let protocol = Protocol::default();
-    let options = PrinterOptions::default();
-    
-    let mut printer = Printer::new(driver, protocol, Some(options));
-    let mut printer = printer.debug_mode(Some(DebugMode::Hex));
-    let printer = printer.init().map_err(|e| e.to_string())?;
-    
-    let mut cmd: Vec<u8> = Vec::new();
-    
-    // Set codepage and contextual mode (no ESC @ - already initialized above)
-    cmd.extend_from_slice(&[0x1B, 0x74, CODEPAGE_WIN1256]); // ESC t - Select code page
-    cmd.extend_from_slice(&[0x1C, 0x43, CONTEXTUAL_MODE]); // FS C - Contextual mode
-    
-    // Center align
-    cmd.extend_from_slice(&[0x1B, 0x61, 0x01]); // ESC a 1 - Center
-    cmd.extend_from_slice(b"\n");
-    
-    // Header
-    cmd.extend_from_slice(&encode_arabic(&reverse_for_display("متجر عينة")));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(&encode_arabic(&reverse_for_display("123 شارع الرئيسي")));
-    cmd.extend_from_slice(b"\n\n");
-    
-    // Divider
-    cmd.extend_from_slice(b"================================\n");
-    cmd.extend_from_slice(&encode_arabic(&reverse_for_display("الأصناف")));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(b"================================\n\n");
-    
-    // Items
-    let items = get_receipt_items();
-    for item in items {
-        cmd.extend_from_slice(&encode_arabic(&reverse_for_display(item.name_ar)));
-        cmd.extend_from_slice(b"\n");
-        let line = format!("{}x @ {:.2} EGP = {:.2} EGP\n\n", item.quantity, item.price, item.total());
-        cmd.extend_from_slice(line.as_bytes());
-    }
-    
-    // Totals
-    let (subtotal, tax, total) = calculate_totals();
-    cmd.extend_from_slice(b"================================\n");
-    cmd.extend_from_slice(&encode_arabic(&reverse_for_display(&format!("المجموع الفرعي: {:.2} ج.م", subtotal))));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(&encode_arabic(&reverse_for_display(&format!("الضريبة (10٪): {:.2} ج.م", tax))));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(b"================================\n");
-    cmd.extend_from_slice(&encode_arabic(&reverse_for_display(&format!("الإجمالي: {:.2} ج.م", total))));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(b"================================\n\n");
-    
-    // Footer
-    cmd.extend_from_slice(&encode_arabic(&reverse_for_display("شكراً لك على الشراء!")));
-    cmd.extend_from_slice(b"\n");
-    cmd.extend_from_slice(&encode_arabic(&reverse_for_display("نتمنى رؤيتك مرة أخرى")));
-    cmd.extend_from_slice(b"\n\n\n\n");
-    
-    // Cut
-    cmd.extend_from_slice(&[0x1D, 0x56, 0x00]); // GS V 0 - Full cut
-    
-    // Send to printer
-    let result: EscposResult<()> = printer
-        .custom(&cmd)
-        .and_then(|p| p.print())
-        .map(|_| ());
-    
-    match result {
-        Ok(_) => Ok(format!("✅ Receipt printed successfully on {}", port)),
+    // IMPORTANT: requires escpos-rs with PC864 support
+    // Cargo.toml:
+    // escpos = { git = "https://github.com/fabienbellanger/escpos-rs", rev = "78a6302", features = ["serial_port"] }
+
+    let opts = PrinterOptions::new(Some(PageCode::PC864), None, 42);
+    let res: EscposResult<()> = Printer::new(driver, Protocol::default(), Some(opts))
+        .debug_mode(Some(DebugMode::Hex))
+        .init()?
+        .justify(JustifyMode::CENTER)?
+        .writeln("متجر عينة")?            
+        .writeln("123 شارع الرئيسي")?     
+        .feed()?                          
+        .print_cut()?;                    
+
+    match res {
+        Ok(()) => Ok(format!("✅ Test (PC864) printed on {}", port)),
         Err(e) => Err(format!("Failed to print: {}", e)),
     }
 }
