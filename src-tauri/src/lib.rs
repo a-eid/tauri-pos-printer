@@ -2,10 +2,9 @@ use encoding_rs::WINDOWS_1256;
 use escpos::{driver::SerialPortDriver, errors::Result as EscposResult, printer::Printer, printer_options::PrinterOptions, utils::*};
 use std::fs;
 use std::path::PathBuf;
-use base64::Engine;
 use image::{ImageBuffer, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, draw_line_segment_mut};
-use rusttype::{Font, Scale};
+use ab_glyph::{FontRef, PxScale};
 
 // ============================================================================
 // Configuration
@@ -218,23 +217,20 @@ fn generate_receipt_image() -> Result<String, String> {
     // Create white background
     let mut img: RgbImage = ImageBuffer::from_pixel(width, height, Rgb([255u8, 255u8, 255u8]));
     
-    // Embed a font that supports Arabic - using Liberation Sans (similar to Arial)
-    // For now, we'll use a simple approach - just render the text as-is
-    // Note: For proper Arabic rendering, we need a font file with Arabic glyphs
+    // Load Noto Sans Arabic font
     let font_data = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
-    let font = Font::try_from_bytes(font_data as &[u8])
-        .ok_or_else(|| "Failed to load font".to_string())?;
+    let font = FontRef::try_from_slice(font_data)
+        .map_err(|e| format!("Failed to load font: {}", e))?;
     
     let black = Rgb([0u8, 0u8, 0u8]);
     let gray = Rgb([128u8, 128u8, 128u8]);
     
     let mut y = 30.0f32;
-    let center_x = (width / 2) as i32;
     let right_x = (width - 40) as i32;
     
     // Helper to draw text centered
     let draw_centered_text = |img: &mut RgbImage, text: &str, y_pos: f32, scale: f32| {
-        let scale = Scale::uniform(scale);
+        let scale = PxScale::from(scale);
         // Simple centering - not perfect but works
         let text_width = text.len() as f32 * scale.x * 0.5;
         let x = (width as f32 / 2.0 - text_width / 2.0) as i32;
@@ -243,7 +239,7 @@ fn generate_receipt_image() -> Result<String, String> {
     
     // Helper to draw text right-aligned
     let draw_right_text = |img: &mut RgbImage, text: &str, y_pos: f32, scale: f32| {
-        let scale_obj = Scale::uniform(scale);
+        let scale_obj = PxScale::from(scale);
         let text_width = text.len() as f32 * scale * 0.5;
         let x = (right_x as f32 - text_width) as i32;
         draw_text_mut(img, black, x.max(20), y_pos as i32, scale_obj, &font, text);
