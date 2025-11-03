@@ -102,8 +102,8 @@ async fn print_receipt() -> Result<String, String> {
     let protocol = Protocol::default();
     let options = PrinterOptions::default();
     
-    let printer = Printer::new(driver, protocol, Some(options));
-    let printer = printer.debug_mode(Some(DebugMode::Hex));
+    let mut printer = Printer::new(driver, protocol, Some(options));
+    let mut printer = printer.debug_mode(Some(DebugMode::Hex));
     let printer = printer.init().map_err(|e| e.to_string())?;
     
     let mut cmd: Vec<u8> = Vec::new();
