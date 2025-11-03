@@ -1,3 +1,4 @@
+// biome-ignore assist/source/organizeImports: disabled.
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
@@ -80,11 +81,15 @@ function App() {
 		}
 
 		console.log("Receipt data:", receiptData);
+		
+		// Test Arabic rendering
+		console.log("Store name:", receiptData.header.storeName);
+		console.log("Item names:", receiptData.items.map(i => i.name));
 
 		// 80mm width = 576px at 72 DPI
 		const width = 576;
 		canvas.width = width;
-		canvas.height = 1000; // Will adjust if needed
+		canvas.height = 1200; // Increased initial height
 
 		// White background
 		ctx.fillStyle = "#ffffff";
@@ -187,69 +192,21 @@ function App() {
 
 		console.log("Canvas drawn successfully. Height:", y);
 
-		// Open in new window
-		setMessage("✅ Preview generated! Opening in new window...");
+		// Convert to data URL
 		const dataUrl = canvas.toDataURL("image/png");
-		
 		console.log("Data URL length:", dataUrl.length);
-		
-		const win = window.open("", "_blank");
-		if (win) {
-			win.document.write(`
-				<!DOCTYPE html>
-				<html>
-					<head>
-						<meta charset="UTF-8">
-						<title>Receipt Preview - 80mm Width</title>
-						<style>
-							* { margin: 0; padding: 0; box-sizing: border-box; }
-							body { 
-								background: #2c3e50; 
-								padding: 20px;
-								display: flex;
-								justify-content: center;
-								align-items: flex-start;
-								min-height: 100vh;
-								font-family: system-ui, -apple-system, sans-serif;
-							}
-							.container {
-								background: white;
-								padding: 20px;
-								border-radius: 8px;
-								box-shadow: 0 10px 40px rgba(0,0,0,0.3);
-								max-width: 616px;
-							}
-							img { 
-								display: block;
-								width: 100%;
-								height: auto;
-								border: 1px solid #ddd;
-							}
-							.info {
-								margin-top: 15px;
-								padding: 15px;
-								background: #ecf0f1;
-								border-radius: 4px;
-								font-size: 14px;
-								color: #2c3e50;
-							}
-							.info strong { color: #e74c3c; }
-						</style>
-					</head>
-					<body>
-						<div class="container">
-							<img src="${dataUrl}" alt="Receipt Preview" />
-							<div class="info">
-								<strong>📏 80mm Thermal Printer</strong><br>
-								Width: 576px (80mm @ 72 DPI)<br>
-								This is how your receipt will look when printed.
-							</div>
-						</div>
-					</body>
-				</html>
-			`);
-			win.document.close();
-		}
+
+		// Save to desktop
+		setMessage("💾 Saving receipt to Desktop...");
+		invoke<string>("save_receipt_image", { imageData: dataUrl })
+			.then((result) => {
+				setMessage(result);
+				console.log("Image saved successfully");
+			})
+			.catch((error) => {
+				setMessage(`❌ Failed to save image: ${error}`);
+				console.error("Save error:", error);
+			});
 	};
 
 	return (
@@ -298,7 +255,7 @@ function App() {
 							opacity: !receiptData ? 0.6 : 1,
 						}}
 					>
-						🖼️ Preview Receipt
+						� Save Receipt to Desktop
 					</button>
 				</div>
 

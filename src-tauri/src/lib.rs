@@ -1,5 +1,8 @@
 use encoding_rs::WINDOWS_1256;
 use escpos::{driver::SerialPortDriver, errors::Result as EscposResult, printer::Printer, printer_options::PrinterOptions, utils::*};
+use std::fs;
+use std::path::PathBuf;
+use base64::Engine;
 
 // ============================================================================
 // Configuration
@@ -200,6 +203,39 @@ fn get_receipt_data() -> Result<serde_json::Value, String> {
     }))
 }
 
+#[tauri::command]
+fn save_receipt_image(image_data: String) -> Result<String, String> {
+    // Remove the data URL prefix if present
+    let base64_data = if image_data.starts_with("data:image/png;base64,") {
+        &image_data[22..]
+    } else {
+        &image_data
+    };
+    
+    // Decode base64
+    let image_bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_data)
+        .map_err(|e| format!("Failed to decode image: {}", e))?;
+    
+    // Get desktop path
+    let desktop = dirs::desktop_dir()
+        .ok_or_else(|| "Could not find desktop directory".to_string())?;
+    
+    // Generate filename with timestamp
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let filename = format!("receipt_{}.png", timestamp);
+    let filepath = desktop.join(&filename);
+    
+    // Write file
+    fs::write(&filepath, image_bytes)
+        .map_err(|e| format!("Failed to save image: {}", e))?;
+    
+    Ok(format!("✅ Receipt saved to Desktop: {}", filename))
+}
+
 // ============================================================================
 // Application Entry Point
 // ============================================================================
@@ -208,9 +244,11 @@ fn get_receipt_data() -> Result<serde_json::Value, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             print_receipt,
             get_receipt_data,
+            save_receipt_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
