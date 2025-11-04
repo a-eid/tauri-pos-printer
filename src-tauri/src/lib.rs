@@ -247,9 +247,9 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let font_bytes = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
     let font = FontRef::try_from_slice(font_bytes).expect("font");
 
-    // Title (remove top whitespace)
+    // Title (remove top whitespace) — use scaled metrics to be API-safe
     let title_scale = PxScale::from(layout.fonts.title);
-    let ascent = font.v_metrics(title_scale).ascent;
+    let ascent = font.as_scaled(title_scale).v_metrics().ascent;
     let y_title = y - ascent.ceil() as i32;
     draw_mixed_rtl_center(&mut img, &font, title_scale, &data.store_name, paper_w, y_title);
     y = y_title + layout.fonts.title as i32 - 8;
