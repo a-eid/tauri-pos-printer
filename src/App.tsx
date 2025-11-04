@@ -13,9 +13,9 @@ type Item = { name: string; qty: number; price: number };
     { name: "ربطة جرجير", qty: 4.0, price: 3.0 },
     { name: "نعناع فريش", qty: 1.0, price: 5.0 },
     // Mixed Arabic + English digits
-    { name: "بسكوت بسكرم 24 قطعه", qty: 1.0, price: 12.5 },
-    { name: "بسكوت شوفان 30 قطعه", qty: 1.0, price: 18.75 },
-    { name: "كوكاكولا لمون نعناع 250 جم", qty: 0.25, price: 40.0 },
+    { name: "بسكوت بسكرم 24 قطعه", qty: 5, price: 12.5 },
+    { name: "بسكوت شوفان 30 قطعه", qty: 7, price: 18.75 },
+    { name: "كوكاكولا لمون نعناع 250 جم", qty: 25, price: 40.0 },
   ];
 
 
