@@ -102,6 +102,7 @@ impl Default for Layout {
                 footer: 45.0,
                 footer_phones: 56.0,
             },
+            // Name, Qty, Price, Total (must sum to 1.00)
             cols: [0.60, 0.12, 0.12, 0.16],
         }
     }
@@ -350,7 +351,10 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
 
     if !data.footer_phones.is_empty() {
         draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.footer_phones), &data.footer_phones, paper_w, y);
+        // ✅ Advance y so cropping includes the phones line
+        y += layout.fonts.footer_phones as i32 + 2;
     }
+
     y += layout.margin_bottom;
 
     // Crop & grayscale
