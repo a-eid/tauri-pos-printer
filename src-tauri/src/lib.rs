@@ -7,11 +7,8 @@ use serde::Deserialize;
 
 // ================================================================
 // Arabic receipt (bitmap via ESC * 24-dot) — RTL, crisp (NCR 7197)
-// Fixes in this drop:
-// - Title uses robust RTL centering (no garbling)
-// - Date drawn as two parts (Arabic on right, time LTR on left)
-// - Less top padding, extra space before dotted line
-// - Slightly smaller bottom padding
+// Fixes: correct mixed RTL/LTR for date/time and footer ("24" not "42"),
+// tighter top padding.
 // ================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
@@ -46,8 +43,7 @@ impl Item { fn value(&self) -> f32 { self.qty * self.price } }
 #[derive(Clone, Deserialize)]
 struct ReceiptData {
     store_name: String,       // supports "\n" for manual 2-line title
-    // Expected format to help the drawer: "<arabic-date> - <latin-time>"
-    // Example: "4 نوفمبر - 4:09 صباحا"
+    // Example: "4 نوفمبر - 4:09 صباحا"  (keep ASCII digits for the time)
     date_time_line: String,
     invoice_no: String,       // "123456"
     items: Vec<Item>,
@@ -61,7 +57,7 @@ struct ReceiptData {
 struct Layout {
     paper_width_px: u32,
     threshold: u8,
-    margin_h: i32,      // horizontal margin (very small)
+    margin_h: i32,      // horizontal margin (tiny)
     margin_top: i32,    // reduced top space
     margin_bottom: i32, // reduced bottom space
     row_gap: i32,       // item vertical gap (tight)
@@ -87,21 +83,20 @@ impl Default for Layout {
             paper_width_px: 576,
             threshold: 150,
             margin_h: 1,
-            margin_top: -14,  // pull content further up (less top padding)
-            margin_bottom: 0, // less bottom space
-            row_gap: 36,      // compact rows
+            margin_top: -18,  // pull up a bit more
+            margin_bottom: 0,
+            row_gap: 36,
             fonts: Fonts {
                 title: 84.0,
                 header_dt: 40.0,
                 header_no: 46.0,
                 header_cols: 42.0,
                 item: 44.0,
-                total_label: 48.0,  // bold-ish label
+                total_label: 48.0,
                 total_value: 66.0,
                 footer: 44.0,
                 footer_phones: 56.0,
             },
-            // Give more room to qty/price/value; name at 60%
             cols: [0.60, 0.16, 0.14, 0.10],
         }
     }
@@ -148,48 +143,70 @@ fn draw_ltr_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, 
     draw_crisp(img, s, x, y, scale, font);
 }
 
-// Helpers to measure text widths
-fn width_rtl(font: &FontRef, scale: PxScale, logical: &str) -> i32 {
-    shape(logical).chars().map(|c| text_size(scale, font, &c.to_string()).0 as i32).sum()
+// Mixed RTL line centered: keep ASCII runs (e.g., "4:09" or "24") LTR,
+// but overall line is RTL and centered.
+fn draw_mixed_rtl_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &str, paper_w: i32, y: i32) {
+    let shaped = shape(logical);
+    let mut runs: Vec<(bool /*ltr*/, String, i32 /*width*/)> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_is_ltr = None::<bool>;
+    let is_ltr_char = |c: char| c.is_ascii(); // digits, spaces, hyphen, colon -> LTR
+
+    for ch in shaped.chars() {
+        let ltr = is_ltr_char(ch);
+        match cur_is_ltr {
+            None => { cur_is_ltr = Some(ltr); cur.push(ch); }
+            Some(kind) if kind == ltr => cur.push(ch),
+            Some(_) => {
+                let w = if cur_is_ltr.unwrap() {
+                    text_size(scale, font, &cur).0 as i32
+                } else {
+                    cur.chars().map(|c| text_size(scale, font, &c.to_string()).0 as i32).sum()
+                };
+                runs.push((cur_is_ltr.unwrap(), cur.clone(), w));
+                cur.clear();
+                cur_is_ltr = Some(ltr);
+                cur.push(ch);
+            }
+        }
+    }
+    if !cur.is_empty() {
+        let w = if cur_is_ltr.unwrap() {
+            text_size(scale, font, &cur).0 as i32
+        } else {
+            cur.chars().map(|c| text_size(scale, font, &c.to_string()).0 as i32).sum()
+        };
+        runs.push((cur_is_ltr.unwrap(), cur.clone(), w));
+    }
+
+    let total_w: i32 = runs.iter().map(|r| r.2).sum();
+    let mut right = (paper_w + total_w) / 2; // paint right-to-left by runs
+
+    for (is_ltr, seg, w) in runs.into_iter().rev() {
+        if is_ltr {
+            draw_ltr_right(img, font, scale, &seg, right, y);
+        } else {
+            let chars: Vec<char> = seg.chars().collect();
+            let mut cw: Vec<i32> = Vec::with_capacity(chars.len());
+            for &c in &chars { let (tw, _) = text_size(scale, font, &c.to_string()); cw.push(tw as i32); }
+            let mut x = right - cw.iter().sum::<i32>();
+            for i in (0..chars.len()).rev() {
+                draw_crisp(img, &chars[i].to_string(), x, y, scale, font);
+                x += cw[i];
+            }
+        }
+        right -= w;
+    }
 }
-fn width_ltr(font: &FontRef, scale: PxScale, s: &str) -> i32 {
-    text_size(scale, font, s).0 as i32
-}
 
-// Draw date centered as: <arabic-date> - <latin-time>
-// e.g., right: "4 نوفمبر", sep: " - ", left: "4:09 صباحا"
-fn draw_date_centered(img: &mut RgbImage, font: &FontRef, scale: PxScale, paper_w: i32, y: i32, full: &str) {
-    let (right_txt, left_txt) = if let Some((a, b)) = full.split_once(" - ") {
-        (a.trim(), b.trim())
-    } else {
-        // Fallback: draw whole line as RTL center
-        draw_rtl_center(img, font, scale, full, paper_w, y);
-        return;
-    };
-
-    let sep = " - ";
-    let w_right = width_rtl(font, scale, right_txt);
-    let w_sep   = width_ltr(font, scale, sep);
-    let w_left  = width_ltr(font, scale, left_txt);
-    let total   = w_right + w_sep + w_left;
-    let x_start = (paper_w - total) / 2;
-
-    // Right Arabic part anchored to its own right edge
-    draw_rtl_right(img, font, scale, right_txt, x_start + w_right, y);
-    // Separator (LTR)
-    draw_crisp(img, sep, x_start + w_right, y, scale, font);
-    // Left (LTR)
-    draw_crisp(img, left_txt, x_start + w_right + w_sep, y, scale, font);
-}
-
-// Centered title; optional manual 2-line via '\n' (pure RTL drawing)
+// Centered title; optional 2 lines via '\n' (pure RTL drawing)
 fn draw_title_two_lines(img: &mut RgbImage, font: &FontRef, scale: PxScale, title: &str, paper_w: i32, y: &mut i32) {
     let lines: Vec<String> = if title.contains('\n') {
         title.split('\n').map(|s| s.trim().to_string()).collect()
     } else { vec![title.to_string()] };
     for (i, line) in lines.iter().enumerate() {
         draw_rtl_center(img, font, scale, line, paper_w, *y);
-        *y += scale.y as i32 + if i + 1 < lines.len() { 2 } else { 0 }; // ultra tight
+        *y += scale.y as i32 + if i + 1 < lines.len() { 2 } else { 0 };
     }
 }
 
@@ -220,14 +237,14 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let font_bytes = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
     let font = FontRef::try_from_slice(font_bytes).expect("font");
 
-    // === Title (tighter top) ===
+    // === Title ===
     draw_title_two_lines(&mut img, &font, PxScale::from(layout.fonts.title), &data.store_name, paper_w, &mut y);
 
-    // === Date/Time (Arabic on right, LTR time on left) ===
-    draw_date_centered(&mut img, &font, PxScale::from(layout.fonts.header_dt), paper_w, y, &data.date_time_line);
+    // === Date/Time (mixed RTL centered -> keeps "4:09" and "24") ===
+    draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.header_dt), &data.date_time_line, paper_w, y);
     y += layout.fonts.header_dt as i32 + 2;
 
-    // === Receipt number (centered LTR) ===
+    // === Receipt number ===
     draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.header_no), &data.invoice_no, paper_w, y);
     y += layout.fonts.header_no as i32 + 2;
 
@@ -260,12 +277,12 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
         y += layout.row_gap;
     }
 
-    // Extra space before dotted line (per request)
+    // Extra space before dotted line
     y += 18;
     draw_dotted(&mut img, y, margin_h, paper_w - margin_h);
     y += 12;
 
-    // === Discount (only if > 0) — label & value close on right ===
+    // === Discount (only if > 0) ===
     if data.discount > 0.0001 {
         let gap = 12;
         let label = "الخصم";
@@ -278,7 +295,7 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
         y += layout.row_gap - 6;
     }
 
-    // === Total — boldish label & value tight on right ===
+    // === Total (tight on right) ===
     let gap = 12;
     let label = "إجمالي الفاتورة";
     let (lw, _) = text_size(PxScale::from(layout.fonts.total_label), &font, &shape(label));
@@ -291,16 +308,15 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
                    label, right, y);
     y += layout.row_gap;
 
-    // === Footer (centered, large) — keep digits in correct order ===
-    // (address & delivery contain digits; they render fine as one run)
-    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_address, paper_w, y);
+    // === Footer ===
+    draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_address,  paper_w, y);
     y += layout.fonts.footer as i32 + 2;
 
-    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_delivery, paper_w, y);
+    // Use mixed so "24" stays in correct order
+    draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_delivery, paper_w, y);
     y += layout.fonts.footer as i32 + 2;
 
     draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.footer_phones), &data.footer_phones, paper_w, y);
-    // minimal bottom padding
     y += layout.margin_bottom;
 
     // Crop and grayscale
@@ -340,7 +356,7 @@ async fn print_receipt() -> Result<String, String> { print_receipt_sample().awai
 async fn print_receipt_sample() -> Result<String, String> {
     let data = ReceiptData {
         store_name: "اسواق ابو عمر".into(),
-        date_time_line: "4 نوفمبر - 4:09 صباحا".into(), // ASCII digits for correct order
+        date_time_line: "4 نوفمبر - 4:09 صباحا".into(), // ASCII digits keep order
         invoice_no: "123456".into(),
         items: vec![
             Item { name: "تفاح عرض".into(),   qty: 0.96, price: 70.00 },
