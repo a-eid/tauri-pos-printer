@@ -85,24 +85,24 @@ struct Fonts {
 impl Default for Layout {
     fn default() -> Self {
         Self {
-            paper_width_px: 576,
+            paper_width_px: 600,
             threshold: 150,
-            margin_h: 1,
-            margin_top: -18,
+            margin_h: 0,
+            margin_top: -28,
             margin_bottom: 0,
-            row_gap: 36,
+            row_gap: 32,
             fonts: Fonts {
-                title: 84.0,
-                header_dt: 40.0,
+                title: 90.0,
+                header_dt: 45.0,
                 header_no: 46.0,
                 header_cols: 42.0,
                 item: 44.0,
                 total_label: 48.0,
                 total_value: 66.0,
-                footer: 44.0,
+                footer: 45.0,
                 footer_phones: 56.0,
             },
-            cols: [0.60, 0.08, 0.14, 0.18],
+            cols: [0.60, 0.09, 0.13, 0.18],
         }
     }
 }
