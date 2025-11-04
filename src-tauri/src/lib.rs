@@ -6,10 +6,10 @@ use ar_reshaper::reshape_line;
 use serde::Deserialize;
 
 // ================================================================
-// Arabic receipt (bitmap via ESC * 24-dot) — RTL, crisp (NCR 7197)
-// - Prints overall `total` as provided (no recompute).
-// - Prints per-item `total` as provided (no compute).
-// - Prints qty exactly as passed (no formatting).
+// Arabic receipt (ESC * 24-dot) — RTL, crisp (NCR 7197)
+// - Prints overall `total` exactly as provided.
+// - Prints per-item `total` exactly as provided.
+// - Prints qty exactly as passed (number or string).
 // ================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
@@ -37,7 +37,7 @@ fn normalize_com_port(port: &str) -> String {
 
 // ---------------- Data & Layout ----------------
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize)]
 struct Item {
     name: String,
     qty_str: String,   // printed exactly as provided
@@ -45,7 +45,7 @@ struct Item {
     total: f32,        // printed as provided
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone)]
 struct ReceiptData {
     store_name: String,
     date_time_line: String,
@@ -58,7 +58,7 @@ struct ReceiptData {
     footer_phones: String,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone)]
 struct Layout {
     paper_width_px: u32,
     threshold: u8,
@@ -70,7 +70,7 @@ struct Layout {
     // RTL columns as percentages of inner width: [name, qty, price, total]
     cols: [f32; 4],
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone)]
 struct Fonts {
     title: f32,
     header_dt: f32,
@@ -115,24 +115,11 @@ enum Qty {
     Str(String),
     Num(f64),
 }
-
 impl Qty {
     fn to_display(self) -> String {
         match self {
             Qty::Str(s) => s,
-            Qty::Num(n) => {
-                // Keep natural representation: 1 -> "1", 1.01 -> "1.01"
-                let s = n.to_string();
-                // Optional trim of trailing zeros (e.g., "1.0" -> "1")
-                if let Some(dot) = s.find('.') {
-                    let (int, frac) = s.split_at(dot);
-                    let mut frac = frac.trim_start_matches('.');
-                    let mut trimmed = frac.trim_end_matches('0').to_string();
-                    if trimmed.is_empty() { int.to_string() } else { format!("{}.{}", int, trimmed) }
-                } else {
-                    s
-                }
-            }
+            Qty::Num(n) => n.to_string(), // 1 -> "1", 1.01 -> "1.01"
         }
     }
 }
@@ -140,7 +127,7 @@ impl Qty {
 #[derive(Deserialize, Clone)]
 struct FrontendItem {
     name: String,
-    qty: Qty,       // string or number, we preserve display
+    qty: Qty,       // string or number, preserved
     price: f32,
     total: f32,     // provided by frontend, printed as-is
 }
@@ -307,7 +294,7 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let r_name  = right_edge;
     let r_qty   = r_name  - w_name;
     let r_price = r_qty   - w_qty;
-    let r_total = r_price - w_price;
+    let r_total = r_price - w_total;
 
     let s_head = PxScale::from(layout.fonts.header_cols);
     draw_mixed_rtl_right(&mut img, &font, s_head, "الصنف",  r_name,  y);
@@ -402,7 +389,7 @@ async fn print_receipt(
     time: String,
     number: String,
     items: Vec<FrontendItem>,
-    total: f32,           // overall total (printed as-is, 2dp formatting)
+    total: f32,           // overall total (printed as-is)
     discount: Option<f32>,
     footer: FrontendFooter,
 ) -> Result<String, String> {
