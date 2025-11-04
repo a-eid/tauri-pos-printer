@@ -7,8 +7,11 @@ use serde::Deserialize;
 
 // ================================================================
 // Arabic receipt (bitmap via ESC * 24-dot) — RTL, crisp (NCR 7197)
-// Fixes: proper RTL centering, tighter margins, dotted separator,
-// total/discount near label, ASCII time digits.
+// Fixes in this drop:
+// - Correct mixed RTL/LTR centering (date/footer digits now 4:09 not 90:4)
+// - Less top space above the title
+// - Extra space between table and dotted line
+// - Reduced bottom spacing
 // ================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
@@ -57,7 +60,7 @@ struct Layout {
     paper_width_px: u32,
     threshold: u8,
     margin_h: i32,      // horizontal margin (very small)
-    margin_top: i32,    // tiny top space
+    margin_top: i32,    // tiny (can be negative to pull up)
     margin_bottom: i32, // tiny bottom space
     row_gap: i32,       // item vertical gap (tight)
     fonts: Fonts,
@@ -81,22 +84,22 @@ impl Default for Layout {
         Self {
             paper_width_px: 576,
             threshold: 150,
-            margin_h: 1,     // reduce side margins further
-            margin_top: 0,   // reduce top
-            margin_bottom: 0,// reduce bottom
-            row_gap: 36,     // rows closer
+            margin_h: 1,
+            margin_top: -6,   // pull content up (less top space)
+            margin_bottom: 0, // less bottom space
+            row_gap: 36,      // compact rows
             fonts: Fonts {
                 title: 84.0,
                 header_dt: 40.0,
                 header_no: 46.0,
                 header_cols: 42.0,
                 item: 44.0,
-                total_label: 46.0,  // slightly bolder look (bigger)
+                total_label: 48.0,  // slightly larger for bolder feel
                 total_value: 66.0,
                 footer: 44.0,
                 footer_phones: 56.0,
             },
-            // More space to qty/price/value; name down to 60%
+            // Give more room to qty/price/value; name at 60%
             cols: [0.60, 0.16, 0.14, 0.10],
         }
     }
@@ -120,17 +123,6 @@ fn draw_rtl_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &
     for i in (0..chars.len()).rev() { draw_crisp(img, &chars[i].to_string(), x, y, scale, font); x += widths[i]; }
 }
 
-// RTL centered (fixed: per-character shaping like right-align, then centered)
-fn draw_rtl_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &str, paper_w: i32, y: i32) {
-    let shaped = shape(logical);
-    let chars: Vec<char> = shaped.chars().collect();
-    let mut widths = Vec::with_capacity(chars.len());
-    for &ch in &chars { let (w, _) = text_size(scale, font, &ch.to_string()); widths.push(w as i32); }
-    let total_w: i32 = widths.iter().sum();
-    let mut x = (paper_w - total_w) / 2;
-    for i in (0..chars.len()).rev() { draw_crisp(img, &chars[i].to_string(), x, y, scale, font); x += widths[i]; }
-}
-
 // LTR right-aligned (numbers/latin)
 fn draw_ltr_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, x_right: i32, y: i32) {
     let (w, _) = text_size(scale, font, s);
@@ -143,14 +135,75 @@ fn draw_ltr_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, 
     draw_crisp(img, s, x, y, scale, font);
 }
 
+// Mixed RTL line centered: keep ASCII digit runs (e.g., "4:09") LTR,
+// but overall line is RTL and centered.
+fn draw_mixed_rtl_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &str, paper_w: i32, y: i32) {
+    let shaped = shape(logical);
+    let mut runs: Vec<(bool /*ltr*/, String, i32 /*width*/)> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_is_ltr = None::<bool>;
+    let is_ltr_char = |c: char| c.is_ascii(); // digits, spaces, hyphen, colon -> LTR
+
+    for ch in shaped.chars() {
+        let ltr = is_ltr_char(ch);
+        match cur_is_ltr {
+            None => { cur_is_ltr = Some(ltr); cur.push(ch); }
+            Some(kind) if kind == ltr => cur.push(ch),
+            Some(_) => {
+                let w = if cur_is_ltr.unwrap() {
+                    text_size(scale, font, &cur).0 as i32
+                } else {
+                    cur.chars().map(|c| text_size(scale, font, &c.to_string()).0 as i32).sum()
+                };
+                runs.push((cur_is_ltr.unwrap(), cur.clone(), w));
+                cur.clear();
+                cur_is_ltr = Some(ltr);
+                cur.push(ch);
+            }
+        }
+    }
+    if !cur.is_empty() {
+        let w = if cur_is_ltr.unwrap() {
+            text_size(scale, font, &cur).0 as i32
+        } else {
+            cur.chars().map(|c| text_size(scale, font, &c.to_string()).0 as i32).sum()
+        };
+        runs.push((cur_is_ltr.unwrap(), cur.clone(), w));
+    }
+
+    let total_w: i32 = runs.iter().map(|r| r.2).sum();
+    let mut right = (paper_w + total_w) / 2; // we paint right-to-left by runs
+
+    for (is_ltr, seg, w) in runs.into_iter().rev() {
+        if is_ltr {
+            draw_ltr_right(img, font, scale, &seg, right, y);
+        } else {
+            // RTL run: draw per-char reversed up to right edge
+            let chars: Vec<char> = seg.chars().collect();
+            let mut cw: Vec<i32> = Vec::with_capacity(chars.len());
+            for &c in &chars { let (tw, _) = text_size(scale, font, &c.to_string()); cw.push(tw as i32); }
+            let mut x = right - cw.iter().sum::<i32>();
+            for i in (0..chars.len()).rev() {
+                draw_crisp(img, &chars[i].to_string(), x, y, scale, font);
+                x += cw[i];
+            }
+        }
+        right -= w;
+    }
+}
+
 // Centered title; optional manual 2-line via '\n'
 fn draw_title_two_lines(img: &mut RgbImage, font: &FontRef, scale: PxScale, title: &str, paper_w: i32, y: &mut i32) {
     let lines: Vec<String> = if title.contains('\n') {
         title.split('\n').map(|s| s.trim().to_string()).collect()
     } else { vec![title.to_string()] };
     for (i, line) in lines.iter().enumerate() {
-        draw_rtl_center(img, font, scale, line, paper_w, *y);
-        *y += scale.y as i32 + if i + 1 < lines.len() { 4 } else { 2 }; // very tight
+        // Title is pure Arabic typically; this keeps it sharp
+        let shaped = shape(line);
+        let (w, _) = text_size(scale, font, &shaped);
+        let x = (paper_w - w as i32) / 2;
+        draw_crisp(img, &shaped, x, *y, scale, font);
+        *y += scale.y as i32 + if i + 1 < lines.len() { 2 } else { 0 }; // super tight
     }
 }
 
@@ -181,16 +234,16 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let font_bytes = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
     let font = FontRef::try_from_slice(font_bytes).expect("font");
 
-    // === Title ===
+    // === Title (tighter top) ===
     draw_title_two_lines(&mut img, &font, PxScale::from(layout.fonts.title), &data.store_name, paper_w, &mut y);
 
-    // === Date/Time (ASCII digits for time) ===
-    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.header_dt), &data.date_time_line, paper_w, y);
+    // === Date/Time (ASCII digits preserved as LTR) ===
+    draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.header_dt), &data.date_time_line, paper_w, y);
     y += layout.fonts.header_dt as i32 + 2;
 
     // === Receipt number ===
     draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.header_no), &data.invoice_no, paper_w, y);
-    y += layout.fonts.header_no as i32 + 4;
+    y += layout.fonts.header_no as i32 + 2;
 
     // ---- compute column right edges FROM THE RIGHT (RTL) ----
     let w_name  = (inner_w as f32 * layout.cols[0]) as i32;
@@ -221,26 +274,25 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
         y += layout.row_gap;
     }
 
-    // === Discount (only if > 0) — label & value close together on right ===
+    // add a little space before dotted line (more than before)
+    y += 10;
+    draw_dotted(&mut img, y, margin_h, paper_w - margin_h);
+    y += 12;
+
+    // === Discount (only if > 0) — label & value close on right ===
     if data.discount > 0.0001 {
         let gap = 12;
-        // compute label width
         let label = "الخصم";
         let (lw, _) = text_size(PxScale::from(layout.fonts.total_label), &font, &shape(label));
         let right = right_edge;
-        // value to the left of label
         draw_ltr_right(&mut img, &font, PxScale::from(layout.fonts.total_label),
                        &format!("{:.2}", data.discount), right - lw as i32 - gap, y);
         draw_rtl_right(&mut img, &font, PxScale::from(layout.fonts.total_label),
                        label, right, y);
-        y += layout.row_gap - 4;
+        y += layout.row_gap - 6;
     }
 
-    // === Separator before totals ===
-    draw_dotted(&mut img, y, margin_h, paper_w - margin_h);
-    y += 10;
-
-    // === Total — label & value close together on right (bold-ish) ===
+    // === Total — boldish label & value tight on right ===
     let gap = 12;
     let label = "إجمالي الفاتورة";
     let (lw, _) = text_size(PxScale::from(layout.fonts.total_label), &font, &shape(label));
@@ -251,17 +303,18 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
                    &format!("{:.2}", total), right - lw as i32 - gap, y - 10);
     draw_rtl_right(&mut img, &font, PxScale::from(layout.fonts.total_label),
                    label, right, y);
-    y += layout.row_gap + 2;
+    y += layout.row_gap;
 
-    // === Footer (centered, large) — use RTL centering (per-char) ===
-    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_address, paper_w, y);
+    // === Footer (centered, large) — mixed RTL so digits keep order ===
+    draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_address, paper_w, y);
     y += layout.fonts.footer as i32 + 2;
 
-    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_delivery, paper_w, y);
+    draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_delivery, paper_w, y);
     y += layout.fonts.footer as i32 + 2;
 
     draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.footer_phones), &data.footer_phones, paper_w, y);
-    y += layout.fonts.footer_phones as i32 + layout.margin_bottom;
+    // reduce bottom space: do not add extra gap here
+    y += layout.margin_bottom;
 
     // Crop and grayscale
     let used_h = (y as u32).min(1598);
@@ -294,15 +347,13 @@ fn pack_esc_star_24(gray: &GrayImage, y0: u32, threshold: u8) -> Vec<u8> {
 // ---------------- Tauri Commands ----------------
 
 #[tauri::command]
-async fn print_receipt() -> Result<String, String> {
-    print_receipt_sample().await
-}
+async fn print_receipt() -> Result<String, String> { print_receipt_sample().await }
 
 #[tauri::command]
 async fn print_receipt_sample() -> Result<String, String> {
     let data = ReceiptData {
         store_name: "اسواق ابو عمر".into(),
-        date_time_line: "4 نوفمبر - 4:09 صباحا".into(), // ASCII digits for time & day
+        date_time_line: "4 نوفمبر - 4:09 صباحا".into(), // ASCII digits for correct order
         invoice_no: "123456".into(),
         items: vec![
             Item { name: "تفاح عرض".into(),   qty: 0.96, price: 70.00 },
@@ -359,6 +410,7 @@ async fn do_print(data: &ReceiptData, layout: &Layout) -> Result<String, String>
         y0 += 24;
     }
 
+    // minimal feed then cut
     p = p.custom(&[0x0A]).map_err(|e| e.to_string())?;
     p = p.print_cut().map_err(|e| e.to_string())?;
     p.print().map_err(|e| e.to_string())?;
