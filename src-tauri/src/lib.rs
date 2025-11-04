@@ -85,7 +85,7 @@ struct Fonts {
 impl Default for Layout {
     fn default() -> Self {
         Self {
-            paper_width_px: 600,
+            paper_width_px: 576,
             threshold: 150,
             margin_h: 0,
             margin_top: -28,
@@ -102,7 +102,7 @@ impl Default for Layout {
                 footer: 45.0,
                 footer_phones: 56.0,
             },
-            cols: [0.60, 0.09, 0.13, 0.18],
+            cols: [0.58, 0.12, 0.13, 0.18],
         }
     }
 }
