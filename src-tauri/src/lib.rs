@@ -1,18 +1,19 @@
 use escpos::{
     driver::SerialPortDriver,
-    errors::Result as EscposResult,
     printer::Printer,
     printer_options::PrinterOptions,
     utils::*,
 };
-use ar_reshaper::reshape_line;
 
-// ===================== Config =====================
+// ============================================================================
+// NCR 7197 – Probe Windows-1256 with FS C (contextual/RTL) values
+// ============================================================================
+
 const DEFAULT_COM_PORT: &str = "COM7";
 const DEFAULT_BAUD_RATE: u32 = 9600;
-// NCR 7197: from your probe, Arabic glyphs appeared around these pages.
-// Default to 22; override with env PRINTER_ESC_T if needed.
-const DEFAULT_ESC_T_PAGE: u8 = 22;
+// ESC t n candidates already tested; we’ll fix on Win-1256 (n=50) and sweep FS C.
+const FS_C_CANDIDATES: &[u8] = &[0, 1, 2, 3, 4, 5, 6];
+
 
 // ===================== Helpers =====================
 fn get_com_port() -> String {
@@ -52,52 +53,39 @@ fn normalize_com_port(port: &str) -> String {
 // ===================== Tauri Commands =====================
 #[tauri::command]
 async fn print_receipt() -> Result<String, String> {
-    let port = normalize_com_port(&get_com_port());
-    let baud = get_baud_rate();
-    let esc_t = get_esc_t_page();
+  let port = std::env::var("PRINTER_COM_PORT").unwrap_or("COM7".into());
+  let baud: u32 = std::env::var("PRINTER_BAUD_RATE").ok().and_then(|s| s.parse().ok()).unwrap_or(9600);
 
-    let driver = SerialPortDriver::open(&port, baud, None)
-        .map_err(|e| format!("Failed to open printer on {} @{}: {}", port, baud, e))?;
+  let driver = SerialPortDriver::open(&port, baud, None)
+      .map_err(|e| format!("open {} @{}: {}", port, baud, e))?;
 
-    // Use PC864 (this table exists in your escpos-rs commit).
-    let opts = PrinterOptions::new(Some(PageCode::PC864), None, 42);
-    let mut printer_obj = Printer::new(driver, Protocol::default(), Some(opts));
-    printer_obj.debug_mode(None);
-    let p = printer_obj.init().map_err(|e| e.to_string())?;
+  // Use Windows-1256 (printer will shape/RTL once FS C is right)
+  let opts = PrinterOptions::new(Some(PageCode::WPC1256), None, 42);
+  let mut p = Printer::new(driver, Protocol::default(), Some(opts))
+      .debug_mode(None)
+      .init().map_err(|e| e.to_string())?
+      .custom(&[0x1B, 0x74, 50]).map_err(|e| e.to_string())?; // ESC t 50 (Win-1256)
 
-    // Pre-shape Arabic so glyphs join correctly with PC864.
-    let line1 = reshape_line("متجر عينة");
-    let line2 = reshape_line("اختبار الطباعة");
+  let line1 = "متجر عينة";
+  let line2 = "اختبار الطباعة";
 
-    let res: EscposResult<()> = p
-        // Select the device code page (from your probe, start with 22).
-        .custom(&[0x1B, 0x74, esc_t])
-        .and_then(|p| p.justify(JustifyMode::CENTER))
-        .and_then(|p| p.writeln(&line1))
-        .and_then(|p| p.writeln(&line2))
-        .and_then(|p| p.feed())
-        .and_then(|p| p.print_cut())
-        .and_then(|p| p.print())
-        .map(|_| ());
+  // Probe FS C values commonly used for Arabic shaping/RTL
+  for &fs in &[0u8,1,2,3,4,5,6] {
+    p = p.custom(&[0x1C, 0x43, fs]).map_err(|e| e.to_string())?; // FS C fs
+    let label = format!("FS C {} →", fs);
+    p = p.justify(JustifyMode::CENTER).map_err(|e| e.to_string())?
+         .writeln(&label).map_err(|e| e.to_string())?
+         .writeln(line1).map_err(|e| e.to_string())?
+         .writeln(line2).map_err(|e| e.to_string())?
+         .feed().map_err(|e| e.to_string())?;
+  }
 
-    match res {
-        Ok(()) => Ok(format!("✅ Arabic test sent on {} (ESC t {})", port, esc_t)),
-        Err(e) => Err(format!("Failed to print: {}", e)),
-    }
+  p = p.print_cut().map_err(|e| e.to_string())?;
+  p.print().map_err(|e| e.to_string())?;
+  Ok("✅ Probed FS C values 0..6 with ESC t 50 (Win-1256)".into())
 }
 
-#[tauri::command]
-fn get_receipt_data() -> Result<serde_json::Value, String> {
-    Ok(serde_json::json!({
-        "header": { "storeName": "متجر عينة", "address": "123 شارع الرئيسي" },
-        "items": [
-            { "name": "تفاح", "quantity": 2, "price": 2.50, "total": 5.00 },
-            { "name": "موز", "quantity": 3, "price": 1.50, "total": 4.50 }
-        ],
-        "totals": { "subtotal": 9.50, "tax": 0.95, "total": 10.45 },
-        "footer": { "thanks": "شكراً لك على الشراء!", "comeback": "نتمنى رؤيتك مرة أخرى" }
-    }))
-}
+
 
 // ===================== App entry =====================
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -105,7 +93,6 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             print_receipt,
-            get_receipt_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

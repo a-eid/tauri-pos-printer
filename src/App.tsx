@@ -37,15 +37,15 @@ function App() {
 	}, []);
 
 	const loadReceiptData = async () => {
-		try {
-			console.log("Loading receipt data...");
-			const data = await invoke<ReceiptData>("get_receipt_data");
-			console.log("Receipt data loaded:", data);
-			setReceiptData(data);
-		} catch (error) {
-			console.error("Failed to load receipt data:", error);
-			setMessage(`❌ Failed to load receipt data: ${error}`);
-		}
+		// try {
+		// 	console.log("Loading receipt data...");
+		// 	const data = await invoke<ReceiptData>("get_receipt_data");
+		// 	console.log("Receipt data loaded:", data);
+		// 	setReceiptData(data);
+		// } catch (error) {
+		// 	console.error("Failed to load receipt data:", error);
+		// 	setMessage(`❌ Failed to load receipt data: ${error}`);
+		// }
 	};
 
 	const handlePrint = async () => {
