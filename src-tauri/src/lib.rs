@@ -60,8 +60,7 @@ struct Layout {
     margin_bottom: i32, // small bottom space
     row_gap: i32,       // item vertical gap (tight)
     fonts: Fonts,
-    // RTL columns as percentages from total inner width:
-    // [name, qty, price, total] — must sum <= 1.0
+    // RTL columns as percentages of inner width: [name, qty, price, total]
     cols: [f32; 4],
 }
 #[derive(Clone, Deserialize)]
@@ -96,7 +95,7 @@ impl Default for Layout {
                 footer: 44.0,
                 footer_phones: 56.0,
             },
-            // >>> Requested layout
+            // Requested split: product gets as much space as possible
             cols: [0.70, 0.10, 0.10, 0.10],
         }
     }
@@ -150,13 +149,18 @@ fn draw_ltr_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, x
     draw_crisp(img, s, x_right - w as i32, y, scale, font);
 }
 
+// LTR centered (for invoice number & phones)
+fn draw_ltr_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, paper_w: i32, y: i32) {
+    let (w, _) = text_size(scale, font, s);
+    let x = (paper_w - w as i32) / 2;
+    draw_crisp(img, s, x, y, scale, font);
+}
+
 // Centered title; optional manual 2-line via '\n'
 fn draw_title_two_lines(img: &mut RgbImage, font: &FontRef, scale: PxScale, title: &str, paper_w: i32, y: &mut i32) {
-    let max_w = (paper_w as f32 * 0.92) as i32;
     let lines: Vec<String> = if title.contains('\n') {
         title.split('\n').map(|s| s.trim().to_string()).collect()
     } else { vec![title.to_string()] };
-
     for line in lines {
         draw_rtl_center(img, font, scale, &line, paper_w, *y);
         *y += scale.y as i32 + 10;
@@ -193,10 +197,10 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let w_price = (inner_w as f32 * layout.cols[2]) as i32;
     let w_total = (inner_w as f32 * layout.cols[3]) as i32;
 
-    let r_name  = right_edge;                  // right boundary of name
-    let r_qty   = r_name  - w_name;            // right boundary of qty
-    let r_price = r_qty   - w_qty;             // right boundary of price
-    let r_total = r_price - w_price;           // right boundary of total
+    let r_name  = right_edge;           // right boundary of name
+    let r_qty   = r_name  - w_name;     // right boundary of qty
+    let r_price = r_qty   - w_qty;      // right boundary of price
+    let r_total = r_price - w_price;    // right boundary of total
 
     // === Column headers (RTL order) ===
     let s_head = PxScale::from(layout.fonts.header_cols);
@@ -209,7 +213,7 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     // === Items ===
     let s_item = PxScale::from(layout.fonts.item);
     for it in &data.items {
-        draw_rtl_right(&mut img, &font, s_item, &it.name,                 r_name,  y);
+        draw_rtl_right(&mut img, &font, s_item, &it.name,                    r_name,  y);
         draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.qty),   r_qty,   y);
         draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.price), r_price, y);
         draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.value()), r_total, y);
