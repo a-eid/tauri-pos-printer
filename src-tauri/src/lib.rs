@@ -408,6 +408,10 @@ async fn print_receipt_sample() -> Result<String, String> {
             Item { name: "جبنه رومي وزن ٢٥٠جم".into(),     qty: 0.25, price: 220.00 },
             Item { name: "جبنه تلاجه عين وزن ٢٥٠جم".into(), qty: 0.25, price: 180.00 },
             Item { name: "لبن وزن ٣.٢٥كج".into(),           qty: 3.25, price: 28.00  },
+            // Additional mixed Arabic + English-number items for testing
+            Item { name: "بسكوت بسكرم 24 قطعه".into(),      qty: 1.00, price: 12.50 },
+            Item { name: "بسكوت شوفان 30 قطعه".into(),      qty: 1.00, price: 18.75 },
+            Item { name: "كوكاكولا لمون نعناع 250 جم".into(), qty: 0.25, price: 40.00 },
         ],
         discount: 0.0,
         footer_address:  "دمياط الجديدة - المركزية - مقابل البنك الأهلي القديم".into(),
