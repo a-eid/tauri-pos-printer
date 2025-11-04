@@ -7,8 +7,9 @@ use serde::Deserialize;
 
 // ================================================================
 // Arabic receipt (bitmap via ESC * 24-dot) — RTL, crisp (NCR 7197)
-// Frontend provides data via `print_receipt(...)` (Tauri command).
-// total: printed EXACTLY as provided (no recompute).
+// - Prints overall `total` as provided (no recompute).
+// - Prints per-item `total` as provided (no compute).
+// - Prints qty exactly as passed (no formatting).
 // ================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
@@ -36,9 +37,13 @@ fn normalize_com_port(port: &str) -> String {
 
 // ---------------- Data & Layout ----------------
 
-#[derive(Clone, Deserialize)]
-struct Item { name: String, qty: f32, price: f32 }
-impl Item { fn value(&self) -> f32 { self.qty * self.price } }
+#[derive(Clone)]
+struct Item {
+    name: String,
+    qty_str: String,   // printed exactly as provided
+    price: f32,
+    total: f32,        // printed as provided
+}
 
 #[derive(Clone, Deserialize)]
 struct ReceiptData {
@@ -47,7 +52,7 @@ struct ReceiptData {
     invoice_no: String,
     items: Vec<Item>,
     discount: f32,
-    total: f32,                // <- display as-is (frontend-provided)
+    total: f32,                // printed as-is
     footer_address: String,
     footer_delivery: String,
     footer_phones: String,
@@ -83,7 +88,7 @@ impl Default for Layout {
             paper_width_px: 576,
             threshold: 150,
             margin_h: 1,
-            margin_top: -18, // tighten top whitespace above title
+            margin_top: -18,
             margin_bottom: 0,
             row_gap: 36,
             fonts: Fonts {
@@ -102,10 +107,43 @@ impl Default for Layout {
     }
 }
 
-// ---------- Frontend payload types (from invoke) ----------
+// ---------- Frontend payload types ----------
 
 #[derive(Deserialize, Clone)]
-struct FrontendItem { name: String, qty: f32, price: f32 }
+#[serde(untagged)]
+enum Qty {
+    Str(String),
+    Num(f64),
+}
+
+impl Qty {
+    fn to_display(self) -> String {
+        match self {
+            Qty::Str(s) => s,
+            Qty::Num(n) => {
+                // Keep natural representation: 1 -> "1", 1.01 -> "1.01"
+                let s = n.to_string();
+                // Optional trim of trailing zeros (e.g., "1.0" -> "1")
+                if let Some(dot) = s.find('.') {
+                    let (int, frac) = s.split_at(dot);
+                    let mut frac = frac.trim_start_matches('.');
+                    let mut trimmed = frac.trim_end_matches('0').to_string();
+                    if trimmed.is_empty() { int.to_string() } else { format!("{}.{}", int, trimmed) }
+                } else {
+                    s
+                }
+            }
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
+struct FrontendItem {
+    name: String,
+    qty: Qty,       // string or number, we preserve display
+    price: f32,
+    total: f32,     // provided by frontend, printed as-is
+}
 
 #[derive(Deserialize, Clone)]
 struct FrontendFooter {
@@ -247,7 +285,7 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let font_bytes = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
     let font = FontRef::try_from_slice(font_bytes).expect("font");
 
-    // Title (keep compact; no v_metrics usage for broad compatibility)
+    // Title
     let title_scale = PxScale::from(layout.fonts.title);
     draw_mixed_rtl_center(&mut img, &font, title_scale, &data.store_name, paper_w, y);
     y += layout.fonts.title as i32 - 8;
@@ -281,10 +319,10 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     // Items
     let s_item = PxScale::from(layout.fonts.item);
     for it in &data.items {
-        draw_mixed_rtl_right(&mut img, &font, s_item, &it.name,                 r_name,  y);
-        draw_ltr_right(&mut img,      &font, s_item, &format!("{:.2}", it.qty), r_qty,   y);
-        draw_ltr_right(&mut img,      &font, s_item, &format!("{:.2}", it.price), r_price, y);
-        draw_ltr_right(&mut img,      &font, s_item, &format!("{:.2}", it.value()), r_total, y);
+        draw_mixed_rtl_right(&mut img, &font, s_item, &it.name,   r_name,  y);
+        draw_ltr_right(&mut img,      &font, s_item, &it.qty_str, r_qty,   y);                 // qty as-is
+        draw_ltr_right(&mut img,      &font, s_item, &format!("{:.2}", it.price), r_price, y); // price 2dp
+        draw_ltr_right(&mut img,      &font, s_item, &format!("{:.2}", it.total), r_total, y); // item total 2dp
         y += layout.row_gap;
     }
 
@@ -356,7 +394,7 @@ fn pack_esc_star_24(gray: &GrayImage, y0: u32, threshold: u8) -> Vec<u8> {
     band
 }
 
-// ---------------- Tauri Command (only this is exposed) ----------------
+// ---------------- Tauri Command ----------------
 
 #[tauri::command]
 async fn print_receipt(
@@ -364,12 +402,17 @@ async fn print_receipt(
     time: String,
     number: String,
     items: Vec<FrontendItem>,
-    total: f32,           // <- REQUIRED and printed as-is
+    total: f32,           // overall total (printed as-is, 2dp formatting)
     discount: Option<f32>,
     footer: FrontendFooter,
 ) -> Result<String, String> {
     let mapped_items: Vec<Item> = items.into_iter()
-        .map(|i| Item { name: i.name, qty: i.qty, price: i.price })
+        .map(|i| Item {
+            name: i.name,
+            qty_str: i.qty.to_display(), // preserve input representation
+            price: i.price,
+            total: i.total,
+        })
         .collect();
 
     let data = ReceiptData {
