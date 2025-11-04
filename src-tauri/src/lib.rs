@@ -1,7 +1,7 @@
 use escpos::{driver::SerialPortDriver, printer::Printer, utils::*};
 use image::{ImageBuffer, Rgb, RgbImage, GrayImage, Luma};
 use imageproc::drawing::{draw_text_mut, text_size};
-use ab_glyph::{FontRef, PxScale};
+use ab_glyph::{Font, FontRef, PxScale};
 use ar_reshaper::reshape_line;
 use serde::Deserialize;
 
@@ -272,9 +272,12 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let font_bytes = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
     let font = FontRef::try_from_slice(font_bytes).expect("font");
 
-    // === Title ===
-    draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.title), &data.store_name, paper_w, y);
-    y += layout.fonts.title as i32 - 8;
+    // === Title (remove top whitespace) ===
+    let title_scale = PxScale::from(layout.fonts.title);
+    let ascent = font.v_metrics(title_scale).ascent;
+    let y_title = y - ascent.ceil() as i32;
+    draw_mixed_rtl_center(&mut img, &font, title_scale, &data.store_name, paper_w, y_title);
+    y = y_title + layout.fonts.title as i32 - 8;
 
     // === Date/Time (mixed RTL centered)
     draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.header_dt), &data.date_time_line, paper_w, y);
