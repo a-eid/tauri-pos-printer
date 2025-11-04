@@ -6,8 +6,7 @@ use ar_reshaper::reshape_line;
 use serde::Deserialize;
 
 // ================================================================
-// Arabic receipt (bitmap via ESC * 24-dot) — RTL, crisp
-// NCR 7197 compatible
+// Arabic receipt (bitmap via ESC * 24-dot) — RTL, crisp (NCR 7197)
 // ================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
@@ -42,7 +41,7 @@ impl Item { fn value(&self) -> f32 { self.qty * self.price } }
 #[derive(Clone, Deserialize)]
 struct ReceiptData {
     store_name: String,       // supports "\n" for manual 2-line title
-    date_time_line: String,   // e.g. "٤ نوفمبر - ٩:٠٤ صباحا"
+    date_time_line: String,   // e.g. "٤ نوفمبر - 4:09 صباحا" (ASCII digits for time)
     invoice_no: String,       // "123456"
     items: Vec<Item>,
     discount: f32,            // if 0 -> hidden
@@ -55,7 +54,7 @@ struct ReceiptData {
 struct Layout {
     paper_width_px: u32,
     threshold: u8,
-    margin_h: i32,      // horizontal margin (small)
+    margin_h: i32,      // horizontal margin (very small)
     margin_top: i32,    // small top space
     margin_bottom: i32, // small bottom space
     row_gap: i32,       // item vertical gap (tight)
@@ -65,25 +64,25 @@ struct Layout {
 }
 #[derive(Clone, Deserialize)]
 struct Fonts {
-    title: f32,         // store title (each line)
-    header_dt: f32,     // date/time line
-    header_no: f32,     // number
-    header_cols: f32,   // column labels
-    item: f32,          // item row
-    total_label: f32,   // "إجمالي الفاتورة"
-    total_value: f32,   // amount
-    footer: f32,        // address + delivery
-    footer_phones: f32, // phones (larger)
+    title: f32,
+    header_dt: f32,
+    header_no: f32,
+    header_cols: f32,
+    item: f32,
+    total_label: f32,
+    total_value: f32,
+    footer: f32,
+    footer_phones: f32,
 }
 impl Default for Layout {
     fn default() -> Self {
         Self {
             paper_width_px: 576,
             threshold: 150,
-            margin_h: 6,     // smaller left/right
-            margin_top: 0,   // smaller top
-            margin_bottom: 0,// smaller bottom
-            row_gap: 40,     // tighter rows
+            margin_h: 2,     // even smaller side margins
+            margin_top: 0,   // reduce top
+            margin_bottom: 0,// reduce bottom
+            row_gap: 36,     // rows closer
             fonts: Fonts {
                 title: 84.0,
                 header_dt: 40.0,
@@ -95,8 +94,8 @@ impl Default for Layout {
                 footer: 44.0,
                 footer_phones: 56.0,
             },
-            // Requested split: product gets as much space as possible
-            cols: [0.70, 0.10, 0.10, 0.10],
+            // Give more space to qty/price/value; name down to 60%
+            cols: [0.60, 0.16, 0.14, 0.10],
         }
     }
 }
@@ -104,7 +103,6 @@ impl Default for Layout {
 // ---------------- Arabic shaping + drawing ----------------
 
 fn shape(s: &str) -> String { reshape_line(s) }
-
 fn draw_crisp(img: &mut RgbImage, s: &str, x: i32, y: i32, scale: PxScale, font: &FontRef) {
     draw_text_mut(img, Rgb([0,0,0]), x, y, scale, font, s);
 }
@@ -129,18 +127,9 @@ fn draw_rtl_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &
 // RTL centered
 fn draw_rtl_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &str, paper_w: i32, y: i32) {
     let shaped = shape(logical);
-    let chars: Vec<char> = shaped.chars().collect();
-    let mut widths = Vec::with_capacity(chars.len());
-    for &ch in &chars {
-        let (w, _) = text_size(scale, font, &ch.to_string());
-        widths.push(w as i32);
-    }
-    let total_w: i32 = widths.iter().sum();
-    let mut x = (paper_w - total_w) / 2;
-    for i in (0..chars.len()).rev() {
-        draw_crisp(img, &chars[i].to_string(), x, y, scale, font);
-        x += widths[i];
-    }
+    let (w, _) = text_size(scale, font, &shaped);
+    let x = (paper_w - w as i32) / 2;
+    draw_crisp(img, &shaped, x, y, scale, font);
 }
 
 // LTR right-aligned (numbers/latin)
@@ -149,11 +138,16 @@ fn draw_ltr_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, x
     draw_crisp(img, s, x_right - w as i32, y, scale, font);
 }
 
-// LTR centered (for invoice number & phones)
+// LTR centered (invoice number, phones)
 fn draw_ltr_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, paper_w: i32, y: i32) {
     let (w, _) = text_size(scale, font, s);
     let x = (paper_w - w as i32) / 2;
     draw_crisp(img, s, x, y, scale, font);
+}
+
+// LTR left-aligned (big total on left)
+fn draw_ltr_left(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, x_left: i32, y: i32) {
+    draw_crisp(img, s, x_left, y, scale, font);
 }
 
 // Centered title; optional manual 2-line via '\n'
@@ -161,9 +155,9 @@ fn draw_title_two_lines(img: &mut RgbImage, font: &FontRef, scale: PxScale, titl
     let lines: Vec<String> = if title.contains('\n') {
         title.split('\n').map(|s| s.trim().to_string()).collect()
     } else { vec![title.to_string()] };
-    for line in lines {
-        draw_rtl_center(img, font, scale, &line, paper_w, *y);
-        *y += scale.y as i32 + 10;
+    for (i, line) in lines.iter().enumerate() {
+        draw_rtl_center(img, font, scale, line, paper_w, *y);
+        *y += scale.y as i32 + if i + 1 < lines.len() { 6 } else { 4 }; // tighter gaps
     }
 }
 
@@ -183,15 +177,15 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     // === Title ===
     draw_title_two_lines(&mut img, &font, PxScale::from(layout.fonts.title), &data.store_name, paper_w, &mut y);
 
-    // === Date/Time ===
+    // === Date/Time (ASCII digits for time) ===
     draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.header_dt), &data.date_time_line, paper_w, y);
-    y += layout.fonts.header_dt as i32 + 6;
+    y += layout.fonts.header_dt as i32 + 4;
 
     // === Receipt number ===
     draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.header_no), &data.invoice_no, paper_w, y);
-    y += layout.fonts.header_no as i32 + 10;
+    y += layout.fonts.header_no as i32 + 6;
 
-    // ---- compute column right edges FROM THE RIGHT (RTL!) ----
+    // ---- compute column right edges FROM THE RIGHT (RTL) ----
     let w_name  = (inner_w as f32 * layout.cols[0]) as i32;
     let w_qty   = (inner_w as f32 * layout.cols[1]) as i32;
     let w_price = (inner_w as f32 * layout.cols[2]) as i32;
@@ -229,16 +223,17 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
 
     // === Total ===
     let total: f32 = data.items.iter().map(|i| i.value()).sum::<f32>() - data.discount;
+    // label on right, big number on left to avoid clipping
     draw_rtl_right(&mut img, &font, PxScale::from(layout.fonts.total_label), "إجمالي الفاتورة", r_name, y);
-    draw_ltr_right(&mut img, &font, PxScale::from(layout.fonts.total_value), &format!("{:.2}", total), r_total, y - 10);
-    y += layout.row_gap + 8;
+    draw_ltr_left (&mut img, &font, PxScale::from(layout.fonts.total_value), &format!("{:.2}", total), margin_h + 4, y - 10);
+    y += layout.row_gap + 6;
 
     // === Footer (centered, large) ===
     draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_address, paper_w, y);
-    y += layout.fonts.footer as i32 + 4;
+    y += layout.fonts.footer as i32 + 2;
 
     draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_delivery, paper_w, y);
-    y += layout.fonts.footer as i32 + 4;
+    y += layout.fonts.footer as i32 + 2;
 
     draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.footer_phones), &data.footer_phones, paper_w, y);
     y += layout.fonts.footer_phones as i32 + layout.margin_bottom;
@@ -282,7 +277,7 @@ async fn print_receipt() -> Result<String, String> {
 async fn print_receipt_sample() -> Result<String, String> {
     let data = ReceiptData {
         store_name: "اسواق ابو عمر".into(),
-        date_time_line: "٤ نوفمبر - ٩:٠٤ صباحا".into(),
+        date_time_line: "٤ نوفمبر - 4:09 صباحا".into(), // ASCII digits for time
         invoice_no: "123456".into(),
         items: vec![
             Item { name: "تفاح عرض".into(),   qty: 0.96, price: 70.00 },
