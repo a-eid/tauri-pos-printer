@@ -6,7 +6,7 @@ use ar_reshaper::reshape_line;
 use serde::Deserialize;
 
 // ================================================================
-// Arabic receipt (bitmap via ESC * 24-dot) — Large, clear, RTL list
+// Arabic receipt (bitmap via ESC * 24-dot) — Crisp, larger, RTL
 // NCR 7197 compatible
 // ================================================================
 
@@ -42,13 +42,13 @@ impl Item { fn value(&self) -> f32 { self.qty * self.price } }
 #[derive(Clone, Deserialize)]
 struct ReceiptData {
     store_name: String,
-    customer_type: String,   // "عميل نقدي"
-    date: String,            // "2025-11-04"
-    time: String,            // "03:00:44"
-    invoice_no: String,      // "52"
-    cashier_name: String,    // "احمد"
-    payment_label: String,   // "كاش"
-    payment_amount: String,  // "35348.00"
+    customer_type: String,
+    date: String,
+    time: String,
+    invoice_no: String,
+    cashier_name: String,
+    payment_label: String,
+    payment_amount: String,
     items: Vec<Item>,
     discount: f32,
     footer_address: String,
@@ -62,32 +62,32 @@ struct Layout {
     margin: i32,
     row_gap: i32,        // vertical gap between item rows
     fonts: Fonts,
-    // Column widths as percentages (must sum <= 1.0): [name, qty, price, value]
+    // Column widths as percentages (sum <= 1.0): [name, qty, price, value] (RTL)
     cols: [f32; 4],
 }
 #[derive(Clone, Deserialize)]
 struct Fonts {
-    title: f32,      // store name
-    meta: f32,       // meta rows (labels/values)
-    header: f32,     // column header labels
-    item: f32,       // item row
-    total: f32,      // big total
+    title: f32,
+    meta: f32,
+    header: f32,
+    item: f32,
+    total: f32,
     footer: f32,
 }
 impl Default for Layout {
     fn default() -> Self {
         Self {
             paper_width_px: 576,
-            threshold: 210,       // a bit darker
+            threshold: 150,       // lower = crisper edges
             margin: 24,
-            row_gap: 48,
+            row_gap: 56,          // more vertical breathing room
             fonts: Fonts {
-                title: 66.0,
-                meta: 34.0,
-                header: 32.0,
-                item: 36.0,
-                total: 56.0,
-                footer: 26.0,
+                title: 78.0,
+                meta: 40.0,
+                header: 42.0,
+                item: 44.0,
+                total: 64.0,
+                footer: 28.0,
             },
             // RTL order: name (right) 50%, qty 12%, price 16%, value 22% (left)
             cols: [0.50, 0.12, 0.16, 0.22],
@@ -99,11 +99,9 @@ impl Default for Layout {
 
 fn shape(s: &str) -> String { reshape_line(s) }
 
-fn draw_bold(img: &mut RgbImage, s: &str, x: i32, y: i32, scale: PxScale, font: &FontRef) {
-    let black = Rgb([0u8, 0u8, 0u8]);
-    for (dx, dy) in [(0,0), (1,0), (0,1), (1,1), (1,2), (2,1)] {
-        draw_text_mut(img, black, x + dx, y + dy, scale, font, s);
-    }
+// Single-pass draw (no bold overpaint) → crisper
+fn draw_crisp(img: &mut RgbImage, s: &str, x: i32, y: i32, scale: PxScale, font: &FontRef) {
+    draw_text_mut(img, Rgb([0,0,0]), x, y, scale, font, s);
 }
 
 // RTL right-aligned: draw characters in reverse from a right edge
@@ -118,7 +116,7 @@ fn draw_rtl_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &
     let total_w: i32 = widths.iter().sum();
     let mut x = x_right - total_w;
     for i in (0..chars.len()).rev() {
-        draw_bold(img, &chars[i].to_string(), x, y, scale, font);
+        draw_crisp(img, &chars[i].to_string(), x, y, scale, font);
         x += widths[i];
     }
 }
@@ -135,7 +133,7 @@ fn draw_rtl_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: 
     let total_w: i32 = widths.iter().sum();
     let mut x = (paper_w - total_w) / 2;
     for i in (0..chars.len()).rev() {
-        draw_bold(img, &chars[i].to_string(), x, y, scale, font);
+        draw_crisp(img, &chars[i].to_string(), x, y, scale, font);
         x += widths[i];
     }
 }
@@ -143,14 +141,13 @@ fn draw_rtl_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: 
 // LTR right-aligned (numbers/latin)
 fn draw_ltr_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, x_right: i32, y: i32) {
     let (w, _) = text_size(scale, font, s);
-    draw_bold(img, s, x_right - w as i32, y, scale, font);
+    draw_crisp(img, s, x_right - w as i32, y, scale, font);
 }
 
 // ---------------- Rendering ----------------
 
 fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let paper_w = layout.paper_width_px as i32;
-    // Tall canvas; we’ll crop later
     let mut img: RgbImage = ImageBuffer::from_pixel(layout.paper_width_px, 1600, Rgb([255,255,255]));
     let margin = layout.margin;
     let inner_w = paper_w - margin*2;
@@ -158,38 +155,39 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let left_edge  = margin;
     let mut y = 18i32;
 
+    // If you have a crisper Arabic font, replace here (e.g., NotoKufiArabic-Regular.ttf)
     let font_bytes = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
     let font = FontRef::try_from_slice(font_bytes).expect("font");
 
     // Store title (centered, big)
     draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.title), &data.store_name, paper_w, y);
-    y += 80;
+    y += 92;
 
     // Meta row: [customer type] [date,time] [invoice no]
     let s_meta = PxScale::from(layout.fonts.meta);
     draw_rtl_right(&mut img, &font, s_meta, "العميل", right_edge, y);
     draw_rtl_right(&mut img, &font, s_meta, &data.customer_type, right_edge - 140, y);
 
-    draw_rtl_right(&mut img, &font, s_meta, "تاريخ", right_edge - 290, y);
-    draw_ltr_right(&mut img, &font, s_meta, &data.date, right_edge - 380, y);
-    draw_ltr_right(&mut img, &font, s_meta, &data.time, right_edge - 470, y);
+    draw_rtl_right(&mut img, &font, s_meta, "تاريخ", right_edge - 300, y);
+    draw_ltr_right(&mut img, &font, s_meta, &data.date, right_edge - 395, y);
+    draw_ltr_right(&mut img, &font, s_meta, &data.time, right_edge - 500, y);
 
     draw_rtl_right(&mut img, &font, s_meta, "رقم", left_edge + 160, y);
     draw_ltr_right(&mut img, &font, s_meta, &data.invoice_no, left_edge + 120, y);
-    y += 40;
+    y += 48;
 
     // Meta row: [cashier] [payment label + amount]
     draw_rtl_right(&mut img, &font, s_meta, "المستخدم", right_edge - 120, y);
     draw_rtl_right(&mut img, &font, s_meta, &data.cashier_name, right_edge - 210, y);
 
-    draw_rtl_right(&mut img, &font, s_meta, &data.payment_label, left_edge + 200, y);
-    draw_ltr_right(&mut img, &font, s_meta, &data.payment_amount, left_edge + 140, y);
-    y += 28;
+    draw_rtl_right(&mut img, &font, s_meta, &data.payment_label, left_edge + 220, y);
+    draw_ltr_right(&mut img, &font, s_meta, &data.payment_amount, left_edge + 150, y);
+    y += 36;
 
-    // Header labels (no boxes/lines)
+    // Header labels (no lines)
     let s_head = PxScale::from(layout.fonts.header);
 
-    // Column x-rights from RTL proportions
+    // Column edges RTL
     let col_name_r  = right_edge;
     let col_qty_r   = right_edge - (inner_w as f32 * layout.cols[0]) as i32;
     let col_price_r = col_qty_r   - (inner_w as f32 * layout.cols[1]) as i32;
@@ -199,12 +197,11 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     draw_rtl_right(&mut img, &font, s_head, "الكمية", col_qty_r,   y);
     draw_rtl_right(&mut img, &font, s_head, "السعر",  col_price_r, y);
     draw_rtl_right(&mut img, &font, s_head, "قيمة",   col_value_r, y);
-    y += layout.row_gap; // small gap before items
+    y += (layout.row_gap - 8);
 
-    // Items (RTL list, big font, no table lines)
+    // Items (RTL list, big font, single-pass crisp)
     let s_item = PxScale::from(layout.fonts.item);
     for it in &data.items {
-        // name (RTL), qty/price/value are numbers (LTR) but right-aligned to their column edges
         draw_rtl_right(&mut img, &font, s_item, &it.name,      col_name_r,  y);
         draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.qty),   col_qty_r,   y);
         draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.price), col_price_r, y);
@@ -213,25 +210,25 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     }
 
     // Discount
-    y += 8;
+    y += 6;
     draw_rtl_right(&mut img, &font, s_head, "الخصم", col_name_r, y);
     draw_ltr_right(&mut img, &font, s_head, &format!("{:.2}", data.discount), col_value_r, y);
     y += layout.row_gap;
 
-    // Total (big & clear)
+    // Total (bigger)
     let total: f32 = data.items.iter().map(|i| i.value()).sum::<f32>() - data.discount;
     draw_rtl_right(&mut img, &font, s_head, "إجمالي الفاتورة", col_name_r, y);
-    draw_ltr_right(&mut img, &font, PxScale::from(layout.fonts.total), &format!("{:.2}", total), col_value_r, y - 6);
-    y += (layout.row_gap + 16);
+    draw_ltr_right(&mut img, &font, PxScale::from(layout.fonts.total), &format!("{:.2}", total), col_value_r, y - 10);
+    y += (layout.row_gap + 22);
 
-    // Footer (address RTL, phones LTR right-aligned)
+    // Footer
     draw_rtl_right(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_address, right_edge, y);
-    y += (layout.row_gap - 10);
+    y += (layout.row_gap - 18);
     draw_ltr_right(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_phones, right_edge, y);
     y += 30;
 
     // Crop and grayscale
-    let used_h = (y + 10) as u32;
+    let used_h = (y + 12) as u32;
     image::DynamicImage::ImageRgb8(img)
         .crop_imm(0, 0, layout.paper_width_px, used_h)
         .to_luma8()
