@@ -14,23 +14,17 @@ const DEFAULT_BAUD_RATE: u32 = 9600;
 // ESC t n candidates already tested; we’ll fix on Win-1256 (n=50) and sweep FS C.
 const FS_C_CANDIDATES: &[u8] = &[0, 1, 2, 3, 4, 5, 6];
 
-
-// ===================== Helpers =====================
 fn get_com_port() -> String {
     std::env::var("PRINTER_COM_PORT").unwrap_or_else(|_| DEFAULT_COM_PORT.to_string())
 }
+
 fn get_baud_rate() -> u32 {
     std::env::var("PRINTER_BAUD_RATE")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_BAUD_RATE)
 }
-fn get_esc_t_page() -> u8 {
-    std::env::var("PRINTER_ESC_T")
-        .ok()
-        .and_then(|s| s.parse::<u8>().ok())
-        .unwrap_or(DEFAULT_ESC_T_PAGE)
-}
+
 fn normalize_com_port(port: &str) -> String {
     #[cfg(windows)]
     {
@@ -50,50 +44,50 @@ fn normalize_com_port(port: &str) -> String {
     }
 }
 
-// ===================== Tauri Commands =====================
 #[tauri::command]
 async fn print_receipt() -> Result<String, String> {
-  let port = std::env::var("PRINTER_COM_PORT").unwrap_or("COM7".into());
-  let baud: u32 = std::env::var("PRINTER_BAUD_RATE").ok().and_then(|s| s.parse().ok()).unwrap_or(9600);
+    let port = normalize_com_port(&get_com_port());
+    let baud = get_baud_rate();
 
-  let driver = SerialPortDriver::open(&port, baud, None)
-      .map_err(|e| format!("open {} @{}: {}", port, baud, e))?;
+    let driver = SerialPortDriver::open(&port, baud, None)
+        .map_err(|e| format!("open {} @{}: {}", port, baud, e))?;
 
-  // Use Windows-1256 (printer will shape/RTL once FS C is right)
-  let opts = PrinterOptions::new(Some(PageCode::WPC1256), None, 42);
-  let mut p = Printer::new(driver, Protocol::default(), Some(opts))
-      .debug_mode(None)
-      .init().map_err(|e| e.to_string())?
-      .custom(&[0x1B, 0x74, 50]).map_err(|e| e.to_string())?; // ESC t 50 (Win-1256)
+    // Software encoder: Windows-1256; device page will be ESC t 50
+    let opts = PrinterOptions::new(Some(PageCode::WPC1256), None, 42);
 
-  let line1 = "متجر عينة";
-  let line2 = "اختبار الطباعة";
+    // Build printer without temporary drops
+    let mut p_obj = Printer::new(driver, Protocol::default(), Some(opts));
+    p_obj.debug_mode(None);
+    let mut p = p_obj.init().map_err(|e| e.to_string())?;
 
-  // Probe FS C values commonly used for Arabic shaping/RTL
-  for &fs in &[0u8,1,2,3,4,5,6] {
-    p = p.custom(&[0x1C, 0x43, fs]).map_err(|e| e.to_string())?; // FS C fs
-    let label = format!("FS C {} →", fs);
-    p = p.justify(JustifyMode::CENTER).map_err(|e| e.to_string())?
-         .writeln(&label).map_err(|e| e.to_string())?
-         .writeln(line1).map_err(|e| e.to_string())?
-         .writeln(line2).map_err(|e| e.to_string())?
-         .feed().map_err(|e| e.to_string())?;
-  }
+    // ESC t 50 = Win-1256 on NCR/Epson class devices
+    p = p.custom(&[0x1B, 0x74, 50]).map_err(|e| e.to_string())?;
 
-  p = p.print_cut().map_err(|e| e.to_string())?;
-  p.print().map_err(|e| e.to_string())?;
-  Ok("✅ Probed FS C values 0..6 with ESC t 50 (Win-1256)".into())
+    let line1 = "متجر عينة";
+    let line2 = "اختبار الطباعة";
+
+    // Probe FS C values (contextual Arabic/RTL). Look for the block that prints connected RTL.
+    for &fs in FS_C_CANDIDATES {
+        // FS C <fs>
+        p = p.custom(&[0x1C, 0x43, fs]).map_err(|e| e.to_string())?;
+        let label = format!("FS C {} →", fs);
+
+        p = p.justify(JustifyMode::CENTER).map_err(|e| e.to_string())?
+            .writeln(&label).map_err(|e| e.to_string())?
+            .writeln(line1).map_err(|e| e.to_string())?
+            .writeln(line2).map_err(|e| e.to_string())?
+            .feed().map_err(|e| e.to_string())?;
+    }
+
+    p = p.print_cut().map_err(|e| e.to_string())?;
+    p.print().map_err(|e| e.to_string())?;
+    Ok(format!("✅ Probed FS C values {:?} using ESC t 50 (Win-1256) on {}", FS_C_CANDIDATES, port))
 }
 
-
-
-// ===================== App entry =====================
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![
-            print_receipt,
-        ])
+        .invoke_handler(tauri::generate_handler![print_receipt])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
