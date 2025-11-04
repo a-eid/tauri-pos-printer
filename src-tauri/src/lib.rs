@@ -1,85 +1,63 @@
 use escpos::{
     driver::SerialPortDriver,
-    errors::Result as EscposResult,
     printer::Printer,
-    printer_options::PrinterOptions,
     utils::*,
 };
-use ar_reshaper::reshape_line;
+use image::{ImageBuffer, Luma, RgbImage, Rgb};
+use imageproc::drawing::draw_text_mut;
+use ab_glyph::{FontRef, PxScale};
 
 // ============================================================================
-// NCR 7197 – Arabic print (software shaping) using PC864
+// Minimal: Print two Arabic lines as a raster image (works on NCR 7197)
+// No code pages, no shaping, no RTL issues — the image is WYSIWYG.
 // ============================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
 const DEFAULT_BAUD_RATE: u32 = 9600;
+const PAPER_WIDTH_PX: u32 = 576; // 80mm thermal head usual width
 
-// From your probe, Arabic glyphs appeared on some pages. Pick the one that
-// showed Arabic letters (e.g. 22, 17, 18, 33). You can change this constant.
-const ESC_T_PC864_INDEX: u8 = 22;
-
-// ----------------------------------------------------------------------------
-// Helpers
-// ----------------------------------------------------------------------------
 fn get_com_port() -> String {
     std::env::var("PRINTER_COM_PORT").unwrap_or_else(|_| DEFAULT_COM_PORT.to_string())
 }
-
 fn get_baud_rate() -> u32 {
     std::env::var("PRINTER_BAUD_RATE")
-        .ok()
-        .and_then(|s| s.parse().ok())
+        .ok().and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_BAUD_RATE)
 }
-
 fn normalize_com_port(port: &str) -> String {
     #[cfg(windows)]
     {
         let upper = port.to_uppercase();
         if upper.starts_with("COM") {
             if let Ok(n) = upper[3..].parse::<u32>() {
-                if n > 9 {
-                    return format!("\\\\.\\{}", upper);
-                }
+                if n > 9 { return format!("\\\\.\\{}", upper); }
             }
         }
         port.to_string()
     }
     #[cfg(not(windows))]
-    {
-        port.to_string()
-    }
+    { port.to_string() }
 }
 
-// Reverse only Arabic runs after shaping so numbers/latin stay LTR.
-fn is_arabic_char(c: char) -> bool {
+// Simple RTL visualizer for image drawing: reverse Arabic runs only.
+fn is_arabic(c: char) -> bool {
     (('\u{0600}'..='\u{06FF}').contains(&c))
         || (('\u{0750}'..='\u{077F}').contains(&c))
         || (('\u{08A0}'..='\u{08FF}').contains(&c))
         || (('\u{FB50}'..='\u{FDFF}').contains(&c))
         || (('\u{FE70}'..='\u{FEFF}').contains(&c))
 }
-fn rtl_visual(src: &str) -> String {
-    let shaped = reshape_line(src);
-    #[derive(Clone, Copy, PartialEq)]
-    enum K { Ar, Other }
+fn rtl_visual(s: &str) -> String {
+    #[derive(Clone, Copy, PartialEq)] enum K { Ar, Other }
     let mut runs: Vec<(K, String)> = Vec::new();
     let mut cur: Option<K> = None;
     let mut buf = String::new();
-    for ch in shaped.chars() {
-        let k = if is_arabic_char(ch) { K::Ar } else { K::Other };
-        if cur == Some(k) || cur.is_none() {
-            buf.push(ch);
-            cur.get_or_insert(k);
-        } else {
-            runs.push((cur.unwrap(), std::mem::take(&mut buf)));
-            cur = Some(k);
-            buf.push(ch);
-        }
+    for ch in s.chars() {
+        let k = if is_arabic(ch) { K::Ar } else { K::Other };
+        if cur == Some(k) || cur.is_none() { buf.push(ch); cur.get_or_insert(k); }
+        else { runs.push((cur.unwrap(), std::mem::take(&mut buf))); cur = Some(k); buf.push(ch); }
     }
-    if !buf.is_empty() {
-        runs.push((cur.unwrap_or(K::Other), buf));
-    }
+    if !buf.is_empty() { runs.push((cur.unwrap_or(K::Other), buf)); }
     let mut out = String::new();
     for (k, run) in runs.into_iter().rev() {
         if k == K::Ar { out.extend(run.chars().rev()); } else { out.push_str(&run); }
@@ -87,9 +65,50 @@ fn rtl_visual(src: &str) -> String {
     out
 }
 
-// ============================================================================
-// Tauri command
-// ============================================================================
+// Render two lines into a 1-bit packed bitmap for GS v 0
+fn render_two_lines_bitmap(line1: &str, line2: &str) -> (Vec<u8>, u16, u16) {
+    let mut img: RgbImage = ImageBuffer::from_pixel(PAPER_WIDTH_PX, 120, Rgb([255, 255, 255]));
+    let font_data = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
+    let font = FontRef::try_from_slice(font_data).expect("load font");
+    let black = Rgb([0u8,0u8,0u8]);
+
+    // Visualize RTL for drawing
+    let l1 = rtl_visual(line1);
+    let l2 = rtl_visual(line2);
+
+    // Very rough centering by character count (ok for short test lines)
+    let scale1 = PxScale::from(32.0);
+    let scale2 = PxScale::from(26.0);
+
+    let approx_w1 = l1.chars().count() as i32 * (scale1.x as i32) / 2;
+    let approx_w2 = l2.chars().count() as i32 * (scale2.x as i32) / 2;
+
+    let x1 = ((PAPER_WIDTH_PX as i32) / 2 - approx_w1 / 2).max(0);
+    let x2 = ((PAPER_WIDTH_PX as i32) / 2 - approx_w2 / 2).max(0);
+
+    draw_text_mut(&mut img, black, x1, 25, scale1, &font, &l1);
+    draw_text_mut(&mut img, black, x2, 70, scale2, &font, &l2);
+
+    // Convert to 1-bit and pack MSB first for GS v 0
+    let gray = image::DynamicImage::ImageRgb8(img).to_luma8();
+    let w = gray.width();
+    let h = gray.height();
+    let bytes_per_row = ((w + 7) / 8) as usize;
+    let mut packed = vec![0u8; bytes_per_row * h as usize];
+
+    for y in 0..h {
+        for x in 0..w {
+            let Luma([pix]) = gray.get_pixel(x, y);
+            let bit = if *pix < 128 { 1u8 } else { 0u8 }; // black = 1
+            let byte_index = y as usize * bytes_per_row + (x as usize / 8);
+            let bit_pos = 7 - (x as u8 & 7);
+            if bit == 1 { packed[byte_index] |= 1u8 << bit_pos; }
+        }
+    }
+
+    (packed, (bytes_per_row as u16), (h as u16))
+}
+
 #[tauri::command]
 async fn print_receipt() -> Result<String, String> {
     let port = normalize_com_port(&get_com_port());
@@ -98,39 +117,32 @@ async fn print_receipt() -> Result<String, String> {
     let driver = SerialPortDriver::open(&port, baud, None)
         .map_err(|e| format!("open {} @{}: {}", port, baud, e))?;
 
-    // Use PC864 table in escpos-rs (the git commit you pinned adds it).
-    let opts = PrinterOptions::new(Some(PageCode::PC864), None, 42);
+    let mut p = Printer::new(driver, Protocol::default(), None)
+        .debug_mode(None)
+        .init().map_err(|e| e.to_string())?;
 
-    // Build printer without temporary drops
-    let mut p_obj = Printer::new(driver, Protocol::default(), Some(opts));
-    p_obj.debug_mode(None);
-    let p = p_obj.init().map_err(|e| e.to_string())?;
+    // Render bitmap (two Arabic lines)
+    let (data, x_bytes, y) = render_two_lines_bitmap("متجر عينة", "اختبار الطباعة");
 
-    // Prepare lines (shape + RTL visual order)
-    let line1 = rtl_visual("متجر عينة");
-    let line2 = rtl_visual("اختبار الطباعة");
+    // GS v 0 m=0 (normal)  xL xH yL yH  + data
+    let xL = (x_bytes & 0xFF) as u8;
+    let xH = ((x_bytes >> 8) & 0xFF) as u8;
+    let yL = (y & 0xFF) as u8;
+    let yH = ((y >> 8) & 0xFF) as u8;
 
-    // Keep EscposResult in the chain; convert to String only once.
-    let res: EscposResult<()> = p
-        // Select device page index that produced Arabic on your printer
-        .custom(&[0x1B, 0x74, ESC_T_PC864_INDEX])
-        .and_then(|p| p.justify(JustifyMode::CENTER))
-        .and_then(|p| p.writeln(&line1))
-        .and_then(|p| p.writeln(&line2))
-        .and_then(|p| p.feed())
-        .and_then(|p| p.print_cut())
-        .and_then(|p| p.print())
-        .map(|_| ());
-    
-    match res {
-        Ok(()) => Ok(format!("✅ Arabic test (PC864, ESC t {}) sent on {}", ESC_T_PC864_INDEX, port)),
-        Err(e) => Err(format!("Failed to print: {}", e)),
-    }
+    p = p.custom(&[0x1D, 0x76, 0x30, 0x00, xL, xH, yL, yH]).map_err(|e| e.to_string())?;
+    p = p.custom(&data).map_err(|e| e.to_string())?;
+    p = p.feed().map_err(|e| e.to_string())?
+         .print_cut().map_err(|e| e.to_string())?;
+
+    p.print().map_err(|e| e.to_string())?;
+    Ok(format!("✅ Arabic bitmap printed on {}", port))
 }
 
 // ============================================================================
 // App entry
 // ============================================================================
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
