@@ -6,7 +6,7 @@ use ar_reshaper::reshape_line;
 use serde::Deserialize;
 
 // ================================================================
-// Arabic receipt (bitmap via ESC * 24-dot) — Crisp, larger, RTL
+// Arabic receipt (bitmap via ESC * 24-dot) — Crisp, RTL, 2-column
 // NCR 7197 compatible
 // ================================================================
 
@@ -41,50 +41,49 @@ impl Item { fn value(&self) -> f32 { self.qty * self.price } }
 
 #[derive(Clone, Deserialize)]
 struct ReceiptData {
-    store_name: String,
-    // kept for JSON API compatibility (not rendered now)
-    customer_type: String,
-    date: String,
-    time: String,
-    invoice_no: String,
-    cashier_name: String,
-    payment_label: String,
-    payment_amount: String,
+    store_name: String,       // supports "\n" for manual 2-line title
+    date_time_line: String,   // e.g. "٤ نوفمبر - ٩:٠٤ صباحا"
+    invoice_no: String,       // "123456"
     items: Vec<Item>,
     discount: f32,
     footer_address: String,
-    footer_phones: String,
+    footer_delivery: String,  // "خدمة توصيل للمنازل 24 ساعة"
+    footer_phones: String,    // "01533333161 - 01533333262"
 }
 
 #[derive(Clone, Deserialize)]
 struct Layout {
     paper_width_px: u32,
     threshold: u8,
-    margin: i32,
-    row_gap: i32,
+    margin_h: i32,      // horizontal margin
+    margin_top: i32,    // smaller top space
+    margin_bottom: i32, // smaller bottom space
+    row_gap: i32,       // item vertical gap
     fonts: Fonts,
-    // Column widths as percentages (sum <= 1.0): [name, qty, price, value] (RTL)
-    cols: [f32; 4],
+    // Two-column (RTL): [name %, price %] must sum <= 1.0
+    cols2: [f32; 2],
 }
 #[derive(Clone, Deserialize)]
 struct Fonts {
-    title: f32,
-    header_dt: f32,   // date/time line
-    header_no: f32,   // receipt number
-    header_cols: f32, // column labels
-    item: f32,
-    total_label: f32,
-    total_value: f32,
-    footer: f32,
-    footer_small: f32,
+    title: f32,         // store title (each line)
+    header_dt: f32,     // date/time line
+    header_no: f32,     // number
+    header_cols: f32,   // "الصنف" | "السعر"
+    item: f32,          // item row
+    total_label: f32,   // "إجمالي الفاتورة"
+    total_value: f32,   // amount
+    footer: f32,        // address + delivery
+    footer_phones: f32, // phones (larger)
 }
 impl Default for Layout {
     fn default() -> Self {
         Self {
             paper_width_px: 576,
-            threshold: 150,  // lower = crisper edges
-            margin: 20,
-            row_gap: 56,
+            threshold: 150, // crisper edges
+            margin_h: 18,
+            margin_top: 2,       // tighter top
+            margin_bottom: 6,    // tighter bottom
+            row_gap: 44,         // closer rows
             fonts: Fonts {
                 title: 84.0,
                 header_dt: 40.0,
@@ -93,11 +92,11 @@ impl Default for Layout {
                 item: 44.0,
                 total_label: 42.0,
                 total_value: 66.0,
-                footer: 40.0,
-                footer_small: 34.0,
+                footer: 44.0,
+                footer_phones: 52.0, // bigger phones
             },
-            // RTL: name (right) 52%, qty 12%, price 16%, value 20% (left)
-            cols: [0.52, 0.12, 0.16, 0.20],
+            // more space for the product name (right), small for price (left)
+            cols2: [0.82, 0.18],
         }
     }
 }
@@ -158,80 +157,103 @@ fn draw_ltr_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, 
     draw_crisp(img, s, x, y, scale, font);
 }
 
+// Centered title with optional auto 2-line wrap by width
+fn draw_title_two_lines(img: &mut RgbImage, font: &FontRef, scale: PxScale, title: &str, paper_w: i32, y: &mut i32) {
+    let max_w = (paper_w as f32 * 0.92) as i32;
+    let lines: Vec<String> = if title.contains('\n') {
+        title.split('\n').map(|s| s.trim().to_string()).collect()
+    } else {
+        // simple greedy wrap by words to at most 2 lines
+        let words: Vec<&str> = title.split_whitespace().collect();
+        let mut l1 = String::new();
+        let mut l2 = String::new();
+        for w in words {
+            let test = if l1.is_empty() { w.to_string() } else { format!("{l1} {w}") };
+            let (_, h) = text_size(scale, font, &shape(&test));
+            let (tw, _) = text_size(scale, font, &shape(&test));
+            if tw as i32 <= max_w || l1.is_empty() {
+                l1 = test;
+            } else {
+                if l2.is_empty() { l2.push_str(w) } else { l2.push_str(&format!(" {w}")); }
+            }
+        }
+        if l2.is_empty() { vec![l1] } else { vec![l1, l2] }
+    };
+
+    for line in lines {
+        draw_rtl_center(img, font, scale, &line, paper_w, *y);
+        *y += scale.y as i32 + 10; // line gap
+    }
+}
+
 // ---------------- Rendering ----------------
 
 fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let paper_w = layout.paper_width_px as i32;
     let mut img: RgbImage = ImageBuffer::from_pixel(layout.paper_width_px, 1600, Rgb([255,255,255]));
-    let margin = layout.margin;
-    let inner_w = paper_w - margin*2;
-    let right_edge = margin + inner_w;
-    let mut y = 6i32; // tight top margin
+    let margin_h = layout.margin_h;
+    let inner_w = paper_w - margin_h*2;
+    let right_edge = margin_h + inner_w;
+    let left_edge  = margin_h;
+    let mut y = layout.margin_top; // tight top
 
-    // Use your preferred Arabic font here (Kufi variants often look sharper)
+    // Use your preferred Arabic font here
     let font_bytes = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
     let font = FontRef::try_from_slice(font_bytes).expect("font");
 
-    // === Title ===
-    let title = "اسواق ابو عمر";
-    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.title), title, paper_w, y);
-    y += layout.fonts.title as i32 + 8;
+    // === Title (supports 2 lines) ===
+    draw_title_two_lines(&mut img, &font, PxScale::from(layout.fonts.title), &data.store_name, paper_w, &mut y);
 
-    // === Date/Time line (no labels) ===
-    let dt_line = "٤ نوفمبر - ٤:٠٩ صباحا";
-    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.header_dt), dt_line, paper_w, y);
-    y += layout.fonts.header_dt as i32 + 8;
+    // === Date/Time (no labels) ===
+    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.header_dt), &data.date_time_line, paper_w, y);
+    y += layout.fonts.header_dt as i32 + 6;
 
     // === Receipt number (no label) ===
     draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.header_no), &data.invoice_no, paper_w, y);
-    y += layout.fonts.header_no as i32 + 18;
+    y += layout.fonts.header_no as i32 + 14;
 
-    // === Column headers (RTL) ===
+    // === Column headers (RTL) : الصنف | السعر ===
     let s_head = PxScale::from(layout.fonts.header_cols);
-    let col_name_r  = right_edge;
-    let col_qty_r   = right_edge - (inner_w as f32 * layout.cols[0]) as i32;
-    let col_price_r = col_qty_r   - (inner_w as f32 * layout.cols[1]) as i32;
-    let col_value_r = col_price_r - (inner_w as f32 * layout.cols[2]) as i32;
-
+    let col_name_r  = right_edge; // name at far right
+    let col_price_r = left_edge + (inner_w as f32 * layout.cols2[0]) as i32; // price edge
     draw_rtl_right(&mut img, &font, s_head, "الصنف",  col_name_r,  y);
-    draw_rtl_right(&mut img, &font, s_head, "الكمية", col_qty_r,   y);
     draw_rtl_right(&mut img, &font, s_head, "السعر",  col_price_r, y);
-    draw_rtl_right(&mut img, &font, s_head, "قيمة",   col_value_r, y);
-    y += layout.row_gap - 8;
+    y += layout.row_gap - 6;
 
-    // === Items ===
+    // === Items (name + price only; price shows total per line) ===
     let s_item = PxScale::from(layout.fonts.item);
     for it in &data.items {
-        draw_rtl_right(&mut img, &font, s_item, &it.name,                   col_name_r,  y);
-        draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.qty),  col_qty_r,   y);
-        draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.price),col_price_r, y);
-        draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.value()), col_value_r, y);
+        let line_total = it.value();
+        draw_rtl_right(&mut img, &font, s_item, &it.name,              col_name_r,  y);
+        draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", line_total), col_price_r, y);
         y += layout.row_gap;
     }
 
-    // === Discount ===
-    draw_rtl_right(&mut img, &font, s_head, "الخصم", col_name_r, y);
-    draw_ltr_right(&mut img, &font, s_head, &format!("{:.2}", data.discount), col_value_r, y);
-    y += layout.row_gap;
+    // === Discount (only if > 0) ===
+    if data.discount > 0.0001 {
+        draw_rtl_right(&mut img, &font, s_head, "الخصم", col_name_r, y);
+        draw_ltr_right(&mut img, &font, s_head, &format!("{:.2}", data.discount), col_price_r, y);
+        y += layout.row_gap;
+    }
 
     // === Total ===
     let total: f32 = data.items.iter().map(|i| i.value()).sum::<f32>() - data.discount;
     draw_rtl_right(&mut img, &font, PxScale::from(layout.fonts.total_label), "إجمالي الفاتورة", col_name_r, y);
-    draw_ltr_right(&mut img, &font, PxScale::from(layout.fonts.total_value), &format!("{:.2}", total), col_value_r, y - 10);
-    y += layout.row_gap + 24;
+    draw_ltr_right(&mut img, &font, PxScale::from(layout.fonts.total_value), &format!("{:.2}", total), col_price_r, y - 10);
+    y += layout.row_gap + 12;
 
-    // === Footer (centered & large) ===
+    // === Footer (centered, larger; includes "24" explicitly) ===
     draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_address, paper_w, y);
-    y += layout.fonts.footer as i32 + 8;
+    y += layout.fonts.footer as i32 + 6;
 
-    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), "خدمه توصيل للمنازل ٢٤ ساعه", paper_w, y);
-    y += layout.fonts.footer as i32 + 8;
+    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_delivery, paper_w, y);
+    y += layout.fonts.footer as i32 + 6;
 
-    draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.footer_small), &data.footer_phones, paper_w, y);
-    y += layout.fonts.footer_small as i32 + 20;
+    draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.footer_phones), &data.footer_phones, paper_w, y);
+    y += layout.fonts.footer_phones as i32 + layout.margin_bottom;
 
     // Crop and grayscale
-    let used_h = (y + 8) as u32;
+    let used_h = (y as u32).min(1598);
     image::DynamicImage::ImageRgb8(img)
         .crop_imm(0, 0, layout.paper_width_px, used_h)
         .to_luma8()
@@ -269,13 +291,8 @@ async fn print_receipt() -> Result<String, String> {
 async fn print_receipt_sample() -> Result<String, String> {
     let data = ReceiptData {
         store_name: "اسواق ابو عمر".into(),
-        customer_type: "".into(),
-        date: "".into(),
-        time: "".into(),
+        date_time_line: "٤ نوفمبر - ٩:٠٤ صباحا".into(),
         invoice_no: "123456".into(),
-        cashier_name: "".into(),
-        payment_label: "".into(),
-        payment_amount: "".into(),
         items: vec![
             Item { name: "تفاح عرض".into(), qty: 0.96, price: 70.00 },
             Item { name: "تفاح".into(),     qty: 1.95, price: 30.00 },
@@ -287,6 +304,7 @@ async fn print_receipt_sample() -> Result<String, String> {
         ],
         discount: 0.0,
         footer_address: "دمياط الجديدة - المركزية - مقابل البنك الأهلي القديم".into(),
+        footer_delivery: "خدمة توصيل للمنازل 24 ساعة".into(),
         footer_phones: "01533333161 - 01533333262".into(),
     };
     let layout = Layout::default();
@@ -330,7 +348,8 @@ async fn do_print(data: &ReceiptData, layout: &Layout) -> Result<String, String>
         y0 += 24;
     }
 
-    p = p.feed().map_err(|e| e.to_string())?;
+    // minimal feed then cut (less bottom whitespace)
+    p = p.custom(&[0x0A]).map_err(|e| e.to_string())?;
     p = p.print_cut().map_err(|e| e.to_string())?;
     p.print().map_err(|e| e.to_string())?;
     Ok(format!("✅ Receipt printed on {}", port))
