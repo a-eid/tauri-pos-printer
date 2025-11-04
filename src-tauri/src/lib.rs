@@ -102,7 +102,7 @@ impl Default for Layout {
                 footer: 44.0,
                 footer_phones: 56.0,
             },
-            cols: [0.60, 0.16, 0.14, 0.10],
+            cols: [0.60, 0.8, 0.14, 0.18],
         }
     }
 }
