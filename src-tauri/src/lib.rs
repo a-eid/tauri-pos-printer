@@ -1,7 +1,7 @@
 use escpos::{driver::SerialPortDriver, printer::Printer, utils::*};
 use image::{ImageBuffer, Rgb, RgbImage, GrayImage, Luma};
 use imageproc::drawing::{draw_text_mut, text_size};
-use ab_glyph::{Font, FontRef, PxScale};
+use ab_glyph::{FontRef, PxScale};
 use ar_reshaper::reshape_line;
 use serde::Deserialize;
 
@@ -83,7 +83,7 @@ impl Default for Layout {
             paper_width_px: 576,
             threshold: 150,
             margin_h: 1,
-            margin_top: -18,
+            margin_top: -18, // tighten top whitespace above title
             margin_bottom: 0,
             row_gap: 36,
             fonts: Fonts {
@@ -247,12 +247,10 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let font_bytes = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
     let font = FontRef::try_from_slice(font_bytes).expect("font");
 
-    // Title (remove top whitespace) — use scaled metrics to be API-safe
+    // Title (keep compact; no v_metrics usage for broad compatibility)
     let title_scale = PxScale::from(layout.fonts.title);
-    let ascent = font.as_scaled(title_scale).v_metrics().ascent;
-    let y_title = y - ascent.ceil() as i32;
-    draw_mixed_rtl_center(&mut img, &font, title_scale, &data.store_name, paper_w, y_title);
-    y = y_title + layout.fonts.title as i32 - 8;
+    draw_mixed_rtl_center(&mut img, &font, title_scale, &data.store_name, paper_w, y);
+    y += layout.fonts.title as i32 - 8;
 
     // Date/Time
     draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.header_dt), &data.date_time_line, paper_w, y);
