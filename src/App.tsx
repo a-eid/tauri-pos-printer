@@ -1,52 +1,12 @@
-// biome-ignore assist/source/organizeImports: disabled.
-import { useState, useEffect } from "react";
+import { useState,  } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
-
-interface ReceiptData {
-	header: {
-		storeName: string;
-		address: string;
-	};
-	items: Array<{
-		name: string;
-		quantity: number;
-		price: number;
-		total: number;
-	}>;
-	totals: {
-		subtotal: number;
-		tax: number;
-		total: number;
-	};
-	footer: {
-		thanks: string;
-		comeback: string;
-	};
-}
 
 function App() {
 	const [message, setMessage] = useState<string>("");
 	const [loading, setLoading] = useState<boolean>(false);
-	const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: ...
-	useEffect(() => {
-		loadReceiptData();
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
 
-	const loadReceiptData = async () => {
-		// try {
-		// 	console.log("Loading receipt data...");
-		// 	const data = await invoke<ReceiptData>("get_receipt_data");
-		// 	console.log("Receipt data loaded:", data);
-		// 	setReceiptData(data);
-		// } catch (error) {
-		// 	console.error("Failed to load receipt data:", error);
-		// 	setMessage(`❌ Failed to load receipt data: ${error}`);
-		// }
-	};
 
 	const handlePrint = async () => {
 		try {
@@ -58,23 +18,6 @@ function App() {
 			setMessage(`❌ Error: ${error}`);
 		} finally {
 			setLoading(false);
-		}
-	};
-
-	const handlePreview = async () => {
-		if (!receiptData) {
-			setMessage("⚠️ No receipt data loaded");
-			return;
-		}
-
-		try {
-			setMessage("🎨 Generating receipt image...");
-			const result = await invoke<string>("generate_receipt_image");
-			setMessage(result);
-			console.log("Image generated successfully:", result);
-		} catch (error) {
-			setMessage(`❌ Failed to generate image: ${error}`);
-			console.error("Generation error:", error);
 		}
 	};
 
@@ -111,23 +54,6 @@ function App() {
 						{loading ? "⏳ Printing..." : "🖨️ Print Receipt"}
 					</button>
 
-					<button
-						type="button"
-						onClick={handlePreview}
-						disabled={!receiptData}
-						className="print-btn-small secondary"
-						style={{
-							padding: "16px 32px",
-							fontSize: "16px",
-							fontWeight: "bold",
-							cursor: !receiptData ? "not-allowed" : "pointer",
-							opacity: !receiptData ? 0.6 : 1,
-						}}
-					>
-						� Save Receipt to Desktop
-					</button>
-				</div>
-
 				<div
 					style={{
 						marginTop: "20px",
@@ -146,6 +72,7 @@ function App() {
 							<code>PRINTER_BAUD_RATE</code> - Baud rate (default: 9600)
 						</li>
 					</ul>
+				</div>
 				</div>
 			</section>
 		</main>
