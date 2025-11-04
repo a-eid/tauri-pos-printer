@@ -55,12 +55,13 @@ struct ReceiptData {
 struct Layout {
     paper_width_px: u32,
     threshold: u8,
-    margin_h: i32,      // horizontal margin (smaller per request)
-    margin_top: i32,    // smaller top space
-    margin_bottom: i32, // smaller bottom space
-    row_gap: i32,       // item vertical gap (tighter)
+    margin_h: i32,      // horizontal margin (small)
+    margin_top: i32,    // small top space
+    margin_bottom: i32, // small bottom space
+    row_gap: i32,       // item vertical gap (tight)
     fonts: Fonts,
-    // Four-column RTL: [name %, qty %, price %, value %] -> name takes most space
+    // RTL columns as percentages from total inner width:
+    // [name, qty, price, total] — must sum <= 1.0
     cols: [f32; 4],
 }
 #[derive(Clone, Deserialize)]
@@ -79,11 +80,11 @@ impl Default for Layout {
     fn default() -> Self {
         Self {
             paper_width_px: 576,
-            threshold: 150, // crisper edges
-            margin_h: 8,    // reduce left/right margins
-            margin_top: 0,  // reduce top margin
-            margin_bottom: 2, // reduce bottom margin
-            row_gap: 40,    // closer rows
+            threshold: 150,
+            margin_h: 6,     // smaller left/right
+            margin_top: 0,   // smaller top
+            margin_bottom: 0,// smaller bottom
+            row_gap: 40,     // tighter rows
             fonts: Fonts {
                 title: 84.0,
                 header_dt: 40.0,
@@ -93,11 +94,10 @@ impl Default for Layout {
                 total_label: 42.0,
                 total_value: 66.0,
                 footer: 44.0,
-                footer_phones: 56.0, // bigger phones
+                footer_phones: 56.0,
             },
-            // give as much space as possible to product name
-            // (sum <= 1.0): name 72%, qty 10%, price 10%, value 8%
-            cols: [0.72, 0.10, 0.10, 0.08],
+            // >>> Requested layout
+            cols: [0.70, 0.10, 0.10, 0.10],
         }
     }
 }
@@ -106,7 +106,6 @@ impl Default for Layout {
 
 fn shape(s: &str) -> String { reshape_line(s) }
 
-// single-pass draw (crisp)
 fn draw_crisp(img: &mut RgbImage, s: &str, x: i32, y: i32, scale: PxScale, font: &FontRef) {
     draw_text_mut(img, Rgb([0,0,0]), x, y, scale, font, s);
 }
@@ -151,38 +150,16 @@ fn draw_ltr_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, x
     draw_crisp(img, s, x_right - w as i32, y, scale, font);
 }
 
-// LTR centered (e.g., number line)
-fn draw_ltr_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, paper_w: i32, y: i32) {
-    let (w, _) = text_size(scale, font, s);
-    let x = (paper_w - w as i32) / 2;
-    draw_crisp(img, s, x, y, scale, font);
-}
-
-// Centered title with optional auto 2-line wrap by width
+// Centered title; optional manual 2-line via '\n'
 fn draw_title_two_lines(img: &mut RgbImage, font: &FontRef, scale: PxScale, title: &str, paper_w: i32, y: &mut i32) {
     let max_w = (paper_w as f32 * 0.92) as i32;
     let lines: Vec<String> = if title.contains('\n') {
         title.split('\n').map(|s| s.trim().to_string()).collect()
-    } else {
-        // simple greedy wrap by words to at most 2 lines
-        let words: Vec<&str> = title.split_whitespace().collect();
-        let mut l1 = String::new();
-        let mut l2 = String::new();
-        for w in words {
-            let test = if l1.is_empty() { w.to_string() } else { format!("{l1} {w}") };
-            let (tw, _) = text_size(scale, font, &shape(&test));
-            if tw as i32 <= max_w || l1.is_empty() {
-                l1 = test;
-            } else {
-                if l2.is_empty() { l2.push_str(w) } else { l2.push_str(&format!(" {w}")); }
-            }
-        }
-        if l2.is_empty() { vec![l1] } else { vec![l1, l2] }
-    };
+    } else { vec![title.to_string()] };
 
     for line in lines {
         draw_rtl_center(img, font, scale, &line, paper_w, *y);
-        *y += scale.y as i32 + 10; // line gap
+        *y += scale.y as i32 + 10;
     }
 }
 
@@ -190,65 +167,69 @@ fn draw_title_two_lines(img: &mut RgbImage, font: &FontRef, scale: PxScale, titl
 
 fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let paper_w = layout.paper_width_px as i32;
-    // plenty height; we'll crop later
     let mut img: RgbImage = ImageBuffer::from_pixel(layout.paper_width_px, 1600, Rgb([255,255,255]));
     let margin_h = layout.margin_h;
     let inner_w = paper_w - margin_h*2;
     let right_edge = margin_h + inner_w;
     let mut y = layout.margin_top;
 
-    // Use your preferred Arabic font here (Kufi variants are very clear)
     let font_bytes = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
     let font = FontRef::try_from_slice(font_bytes).expect("font");
 
-    // === Title (supports 2 lines) ===
+    // === Title ===
     draw_title_two_lines(&mut img, &font, PxScale::from(layout.fonts.title), &data.store_name, paper_w, &mut y);
 
-    // === Date/Time (no labels) ===
+    // === Date/Time ===
     draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.header_dt), &data.date_time_line, paper_w, y);
     y += layout.fonts.header_dt as i32 + 6;
 
-    // === Receipt number (no label) ===
+    // === Receipt number ===
     draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.header_no), &data.invoice_no, paper_w, y);
     y += layout.fonts.header_no as i32 + 10;
 
-    // === Column headers (RTL): الصنف | الكمية | السعر | قيمة ===
-    let s_head = PxScale::from(layout.fonts.header_cols);
-    let col_name_r  = margin_h + (inner_w as f32 * (layout.cols[0] + layout.cols[1] + layout.cols[2] + layout.cols[3])) as i32; // == right_edge
-    let col_qty_r   = margin_h + (inner_w as f32 * (layout.cols[0])) as i32;
-    let col_price_r = margin_h + (inner_w as f32 * (layout.cols[0] + layout.cols[1])) as i32;
-    let col_value_r = margin_h + (inner_w as f32 * (layout.cols[0] + layout.cols[1] + layout.cols[2])) as i32;
+    // ---- compute column right edges FROM THE RIGHT (RTL!) ----
+    let w_name  = (inner_w as f32 * layout.cols[0]) as i32;
+    let w_qty   = (inner_w as f32 * layout.cols[1]) as i32;
+    let w_price = (inner_w as f32 * layout.cols[2]) as i32;
+    let w_total = (inner_w as f32 * layout.cols[3]) as i32;
 
-    draw_rtl_right(&mut img, &font, s_head, "الصنف",  col_name_r,  y);
-    draw_rtl_right(&mut img, &font, s_head, "الكمية", col_qty_r,   y);
-    draw_rtl_right(&mut img, &font, s_head, "السعر",  col_price_r, y);
-    draw_rtl_right(&mut img, &font, s_head, "قيمة",   col_value_r, y);
+    let r_name  = right_edge;                  // right boundary of name
+    let r_qty   = r_name  - w_name;            // right boundary of qty
+    let r_price = r_qty   - w_qty;             // right boundary of price
+    let r_total = r_price - w_price;           // right boundary of total
+
+    // === Column headers (RTL order) ===
+    let s_head = PxScale::from(layout.fonts.header_cols);
+    draw_rtl_right(&mut img, &font, s_head, "الصنف",  r_name,  y);
+    draw_rtl_right(&mut img, &font, s_head, "الكمية", r_qty,   y);
+    draw_rtl_right(&mut img, &font, s_head, "السعر",  r_price, y);
+    draw_rtl_right(&mut img, &font, s_head, "القيمة", r_total, y);
     y += layout.row_gap - 6;
 
-    // === Items (full 4-column layout) ===
+    // === Items ===
     let s_item = PxScale::from(layout.fonts.item);
     for it in &data.items {
-        draw_rtl_right(&mut img, &font, s_item, &it.name,                 col_name_r,  y);
-        draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.qty),   col_qty_r,   y);
-        draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.price), col_price_r, y);
-        draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.value()), col_value_r, y);
+        draw_rtl_right(&mut img, &font, s_item, &it.name,                 r_name,  y);
+        draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.qty),   r_qty,   y);
+        draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.price), r_price, y);
+        draw_ltr_right(&mut img, &font, s_item, &format!("{:.2}", it.value()), r_total, y);
         y += layout.row_gap;
     }
 
     // === Discount (only if > 0) ===
     if data.discount > 0.0001 {
-        draw_rtl_right(&mut img, &font, s_head, "الخصم", col_name_r, y);
-        draw_ltr_right(&mut img, &font, s_head, &format!("{:.2}", data.discount), col_value_r, y);
+        draw_rtl_right(&mut img, &font, s_head, "الخصم", r_name, y);
+        draw_ltr_right(&mut img, &font, s_head, &format!("{:.2}", data.discount), r_total, y);
         y += layout.row_gap;
     }
 
     // === Total ===
     let total: f32 = data.items.iter().map(|i| i.value()).sum::<f32>() - data.discount;
-    draw_rtl_right(&mut img, &font, PxScale::from(layout.fonts.total_label), "إجمالي الفاتورة", col_name_r, y);
-    draw_ltr_right(&mut img, &font, PxScale::from(layout.fonts.total_value), &format!("{:.2}", total), col_value_r, y - 10);
-    y += layout.row_gap + 10;
+    draw_rtl_right(&mut img, &font, PxScale::from(layout.fonts.total_label), "إجمالي الفاتورة", r_name, y);
+    draw_ltr_right(&mut img, &font, PxScale::from(layout.fonts.total_value), &format!("{:.2}", total), r_total, y - 10);
+    y += layout.row_gap + 8;
 
-    // === Footer (centered, larger) ===
+    // === Footer (centered, large) ===
     draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_address, paper_w, y);
     y += layout.fonts.footer as i32 + 4;
 
@@ -354,7 +335,6 @@ async fn do_print(data: &ReceiptData, layout: &Layout) -> Result<String, String>
         y0 += 24;
     }
 
-    // minimal feed then cut (less bottom whitespace)
     p = p.custom(&[0x0A]).map_err(|e| e.to_string())?;
     p = p.print_cut().map_err(|e| e.to_string())?;
     p.print().map_err(|e| e.to_string())?;
