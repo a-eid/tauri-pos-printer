@@ -6,8 +6,6 @@ function App() {
 	const [message, setMessage] = useState<string>("");
 	const [loading, setLoading] = useState<boolean>(false);
 
-
-
 	const handlePrint = async () => {
 		try {
 			setLoading(true);
