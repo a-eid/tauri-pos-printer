@@ -2,15 +2,46 @@ import { useState,  } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
+type Item = { name: string; qty: number; price: number };
+  const items: Item[] = [
+    { name: "عرض تفاح", qty: 0.96, price: 70.0 },
+    { name: "تفاح", qty: 1.95, price: 30.0 },
+    { name: "خيار", qty: 1.02, price: 25.0 },
+    { name: "ليمون بلدي", qty: 0.44, price: 30.0 },
+    { name: "بطاطا", qty: 2.16, price: 20.0 },
+    { name: "ربطة جرجير", qty: 4.0, price: 3.0 },
+    { name: "نعناع فريش", qty: 1.0, price: 5.0 },
+    // Mixed Arabic + English digits
+    { name: "بسكوت بسكرم 24 قطعه", qty: 1.0, price: 12.5 },
+    { name: "بسكوت شوفان 30 قطعه", qty: 1.0, price: 18.75 },
+    { name: "كوكاكولا لمون نعناع 250 جم", qty: 0.25, price: 40.0 },
+  ];
+
+
+
 function App() {
 	const [message, setMessage] = useState<string>("");
 	const [loading, setLoading] = useState<boolean>(false);
+
 
 	const handlePrint = async () => {
 		try {
 			setLoading(true);
 			setMessage("Printing receipt...");
-			const result = await invoke<string>("print_receipt");
+  const result = await invoke<string>("print_receipt", {
+    title: "اسواق ابو عمر",
+    time: "٤ نوفمبر - ٤:٠٩ صباحا",
+    number: "123456",
+    items,
+    total: null,               // optional; Rust will recompute anyway
+    discount: 0,               // optional
+    footer: {
+      address: "دمياط الجديدة - المركزية - مقابل البنك الأهلي القديم",
+      "last line": "خدمة توصيل للمنازل ٢٤ ساعة",
+      // phones is optional; add if you want it centered on last line
+      // phones: "01533333161 - 01533333262",
+    },
+  });
 			setMessage(result);
 		} catch (error) {
 			setMessage(`❌ Error: ${error}`);
