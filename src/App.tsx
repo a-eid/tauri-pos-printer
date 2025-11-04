@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 type Item = { name: string; qty: number; price: number };
+
   const items: Item[] = [
     { name: "عرض تفاح", qty: 0.96, price: 70.0 },
     { name: "تفاح", qty: 1.95, price: 30.0 },
@@ -33,12 +34,11 @@ function App() {
     time: "٤ نوفمبر - ٤:٠٩ صباحا",
     number: "123456",
     items,
-    total: null,               // optional; Rust will recompute anyway
-    discount: 0,               // optional
+    total: 550,                // <- printed exactly as provided
+    discount: 0,             // optional; shown if > 0
     footer: {
       address: "دمياط الجديدة - المركزية - مقابل البنك الأهلي القديم",
       "last line": "خدمة توصيل للمنازل ٢٤ ساعة",
-      // phones is optional; add if you want it centered on last line
       // phones: "01533333161 - 01533333262",
     },
   });

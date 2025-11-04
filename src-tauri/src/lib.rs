@@ -8,6 +8,7 @@ use serde::Deserialize;
 // ================================================================
 // Arabic receipt (bitmap via ESC * 24-dot) — RTL, crisp (NCR 7197)
 // Frontend provides data via `print_receipt(...)` (Tauri command).
+// total: printed EXACTLY as provided (no recompute).
 // ================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
@@ -46,6 +47,7 @@ struct ReceiptData {
     invoice_no: String,
     items: Vec<Item>,
     discount: f32,
+    total: f32,                // <- display as-is (frontend-provided)
     footer_address: String,
     footer_delivery: String,
     footer_phones: String,
@@ -305,15 +307,14 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
         y += layout.row_gap - 6;
     }
 
-    // Total
+    // Total (display as provided)
     let gap = 12;
     let label = "إجمالي الفاتورة";
     let (lw, _) = text_size(PxScale::from(layout.fonts.total_label), &font, &shape(label));
     let right = right_edge;
-    let total: f32 = data.items.iter().map(|i| i.value()).sum::<f32>() - data.discount;
 
     draw_ltr_right(&mut img, &font, PxScale::from(layout.fonts.total_value),
-                   &format!("{:.2}", total), right - lw as i32 - gap, y - 10);
+                   &format!("{:.2}", data.total), right - lw as i32 - gap, y - 10);
     draw_mixed_rtl_right(&mut img, &font, PxScale::from(layout.fonts.total_label), label, right, y);
     y += layout.row_gap;
 
@@ -365,7 +366,7 @@ async fn print_receipt(
     time: String,
     number: String,
     items: Vec<FrontendItem>,
-    total: Option<f32>,     // accepted but ignored (we recompute)
+    total: f32,           // <- REQUIRED and printed as-is
     discount: Option<f32>,
     footer: FrontendFooter,
 ) -> Result<String, String> {
@@ -379,6 +380,7 @@ async fn print_receipt(
         invoice_no: number,
         items: mapped_items,
         discount: discount.unwrap_or(0.0),
+        total,
         footer_address: footer.address,
         footer_delivery: footer.last_line,
         footer_phones: footer.phones.unwrap_or_default(),
