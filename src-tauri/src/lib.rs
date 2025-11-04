@@ -352,12 +352,19 @@ async fn do_print(data: &ReceiptData, layout: &Layout) -> Result<String, String>
     Ok(format!("✅ Receipt printed on {}.", port))
 }
 
+// add this near other commands
+#[tauri::command]
+async fn print_receipt() -> Result<String, String> {
+    print_receipt_sample().await
+}
+
 // =============== App entry =====================
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            print_receipt,     
             print_receipt_sample,
             print_receipt_json
         ])
