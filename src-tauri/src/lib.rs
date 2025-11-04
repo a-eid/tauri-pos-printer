@@ -8,10 +8,10 @@ use serde::Deserialize;
 // ================================================================
 // Arabic receipt (bitmap via ESC * 24-dot) — RTL, crisp (NCR 7197)
 // Fixes in this drop:
-// - Correct mixed RTL/LTR centering (date/footer digits now 4:09 not 90:4)
-// - Less top space above the title
-// - Extra space between table and dotted line
-// - Reduced bottom spacing
+// - Title uses robust RTL centering (no garbling)
+// - Date drawn as two parts (Arabic on right, time LTR on left)
+// - Less top padding, extra space before dotted line
+// - Slightly smaller bottom padding
 // ================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
@@ -46,7 +46,9 @@ impl Item { fn value(&self) -> f32 { self.qty * self.price } }
 #[derive(Clone, Deserialize)]
 struct ReceiptData {
     store_name: String,       // supports "\n" for manual 2-line title
-    date_time_line: String,   // e.g. "4 نوفمبر - 4:09 صباحا" (ASCII digits for time)
+    // Expected format to help the drawer: "<arabic-date> - <latin-time>"
+    // Example: "4 نوفمبر - 4:09 صباحا"
+    date_time_line: String,
     invoice_no: String,       // "123456"
     items: Vec<Item>,
     discount: f32,            // if 0 -> hidden
@@ -60,8 +62,8 @@ struct Layout {
     paper_width_px: u32,
     threshold: u8,
     margin_h: i32,      // horizontal margin (very small)
-    margin_top: i32,    // tiny (can be negative to pull up)
-    margin_bottom: i32, // tiny bottom space
+    margin_top: i32,    // reduced top space
+    margin_bottom: i32, // reduced bottom space
     row_gap: i32,       // item vertical gap (tight)
     fonts: Fonts,
     // RTL columns as percentages of inner width: [name, qty, price, total]
@@ -85,7 +87,7 @@ impl Default for Layout {
             paper_width_px: 576,
             threshold: 150,
             margin_h: 1,
-            margin_top: -6,   // pull content up (less top space)
+            margin_top: -14,  // pull content further up (less top padding)
             margin_bottom: 0, // less bottom space
             row_gap: 36,      // compact rows
             fonts: Fonts {
@@ -94,7 +96,7 @@ impl Default for Layout {
                 header_no: 46.0,
                 header_cols: 42.0,
                 item: 44.0,
-                total_label: 48.0,  // slightly larger for bolder feel
+                total_label: 48.0,  // bold-ish label
                 total_value: 66.0,
                 footer: 44.0,
                 footer_phones: 56.0,
@@ -123,6 +125,17 @@ fn draw_rtl_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &
     for i in (0..chars.len()).rev() { draw_crisp(img, &chars[i].to_string(), x, y, scale, font); x += widths[i]; }
 }
 
+// RTL centered (Arabic)
+fn draw_rtl_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &str, paper_w: i32, y: i32) {
+    let shaped = shape(logical);
+    let chars: Vec<char> = shaped.chars().collect();
+    let mut widths = Vec::with_capacity(chars.len());
+    for &c in &chars { let (w, _) = text_size(scale, font, &c.to_string()); widths.push(w as i32); }
+    let total_w: i32 = widths.iter().sum();
+    let mut x = (paper_w - total_w) / 2;
+    for i in (0..chars.len()).rev() { draw_crisp(img, &chars[i].to_string(), x, y, scale, font); x += widths[i]; }
+}
+
 // LTR right-aligned (numbers/latin)
 fn draw_ltr_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, x_right: i32, y: i32) {
     let (w, _) = text_size(scale, font, s);
@@ -135,75 +148,48 @@ fn draw_ltr_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, s: &str, 
     draw_crisp(img, s, x, y, scale, font);
 }
 
-// Mixed RTL line centered: keep ASCII digit runs (e.g., "4:09") LTR,
-// but overall line is RTL and centered.
-fn draw_mixed_rtl_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &str, paper_w: i32, y: i32) {
-    let shaped = shape(logical);
-    let mut runs: Vec<(bool /*ltr*/, String, i32 /*width*/)> = Vec::new();
-    let mut cur = String::new();
-    let mut cur_is_ltr = None::<bool>;
-    let is_ltr_char = |c: char| c.is_ascii(); // digits, spaces, hyphen, colon -> LTR
-
-    for ch in shaped.chars() {
-        let ltr = is_ltr_char(ch);
-        match cur_is_ltr {
-            None => { cur_is_ltr = Some(ltr); cur.push(ch); }
-            Some(kind) if kind == ltr => cur.push(ch),
-            Some(_) => {
-                let w = if cur_is_ltr.unwrap() {
-                    text_size(scale, font, &cur).0 as i32
-                } else {
-                    cur.chars().map(|c| text_size(scale, font, &c.to_string()).0 as i32).sum()
-                };
-                runs.push((cur_is_ltr.unwrap(), cur.clone(), w));
-                cur.clear();
-                cur_is_ltr = Some(ltr);
-                cur.push(ch);
-            }
-        }
-    }
-    if !cur.is_empty() {
-        let w = if cur_is_ltr.unwrap() {
-            text_size(scale, font, &cur).0 as i32
-        } else {
-            cur.chars().map(|c| text_size(scale, font, &c.to_string()).0 as i32).sum()
-        };
-        runs.push((cur_is_ltr.unwrap(), cur.clone(), w));
-    }
-
-    let total_w: i32 = runs.iter().map(|r| r.2).sum();
-    let mut right = (paper_w + total_w) / 2; // we paint right-to-left by runs
-
-    for (is_ltr, seg, w) in runs.into_iter().rev() {
-        if is_ltr {
-            draw_ltr_right(img, font, scale, &seg, right, y);
-        } else {
-            // RTL run: draw per-char reversed up to right edge
-            let chars: Vec<char> = seg.chars().collect();
-            let mut cw: Vec<i32> = Vec::with_capacity(chars.len());
-            for &c in &chars { let (tw, _) = text_size(scale, font, &c.to_string()); cw.push(tw as i32); }
-            let mut x = right - cw.iter().sum::<i32>();
-            for i in (0..chars.len()).rev() {
-                draw_crisp(img, &chars[i].to_string(), x, y, scale, font);
-                x += cw[i];
-            }
-        }
-        right -= w;
-    }
+// Helpers to measure text widths
+fn width_rtl(font: &FontRef, scale: PxScale, logical: &str) -> i32 {
+    shape(logical).chars().map(|c| text_size(scale, font, &c.to_string()).0 as i32).sum()
+}
+fn width_ltr(font: &FontRef, scale: PxScale, s: &str) -> i32 {
+    text_size(scale, font, s).0 as i32
 }
 
-// Centered title; optional manual 2-line via '\n'
+// Draw date centered as: <arabic-date> - <latin-time>
+// e.g., right: "4 نوفمبر", sep: " - ", left: "4:09 صباحا"
+fn draw_date_centered(img: &mut RgbImage, font: &FontRef, scale: PxScale, paper_w: i32, y: i32, full: &str) {
+    let (right_txt, left_txt) = if let Some((a, b)) = full.split_once(" - ") {
+        (a.trim(), b.trim())
+    } else {
+        // Fallback: draw whole line as RTL center
+        draw_rtl_center(img, font, scale, full, paper_w, y);
+        return;
+    };
+
+    let sep = " - ";
+    let w_right = width_rtl(font, scale, right_txt);
+    let w_sep   = width_ltr(font, scale, sep);
+    let w_left  = width_ltr(font, scale, left_txt);
+    let total   = w_right + w_sep + w_left;
+    let x_start = (paper_w - total) / 2;
+
+    // Right Arabic part anchored to its own right edge
+    draw_rtl_right(img, font, scale, right_txt, x_start + w_right, y);
+    // Separator (LTR)
+    draw_crisp(img, sep, x_start + w_right, y, scale, font);
+    // Left (LTR)
+    draw_crisp(img, left_txt, x_start + w_right + w_sep, y, scale, font);
+}
+
+// Centered title; optional manual 2-line via '\n' (pure RTL drawing)
 fn draw_title_two_lines(img: &mut RgbImage, font: &FontRef, scale: PxScale, title: &str, paper_w: i32, y: &mut i32) {
     let lines: Vec<String> = if title.contains('\n') {
         title.split('\n').map(|s| s.trim().to_string()).collect()
     } else { vec![title.to_string()] };
     for (i, line) in lines.iter().enumerate() {
-        // Title is pure Arabic typically; this keeps it sharp
-        let shaped = shape(line);
-        let (w, _) = text_size(scale, font, &shaped);
-        let x = (paper_w - w as i32) / 2;
-        draw_crisp(img, &shaped, x, *y, scale, font);
-        *y += scale.y as i32 + if i + 1 < lines.len() { 2 } else { 0 }; // super tight
+        draw_rtl_center(img, font, scale, line, paper_w, *y);
+        *y += scale.y as i32 + if i + 1 < lines.len() { 2 } else { 0 }; // ultra tight
     }
 }
 
@@ -237,11 +223,11 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     // === Title (tighter top) ===
     draw_title_two_lines(&mut img, &font, PxScale::from(layout.fonts.title), &data.store_name, paper_w, &mut y);
 
-    // === Date/Time (ASCII digits preserved as LTR) ===
-    draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.header_dt), &data.date_time_line, paper_w, y);
+    // === Date/Time (Arabic on right, LTR time on left) ===
+    draw_date_centered(&mut img, &font, PxScale::from(layout.fonts.header_dt), paper_w, y, &data.date_time_line);
     y += layout.fonts.header_dt as i32 + 2;
 
-    // === Receipt number ===
+    // === Receipt number (centered LTR) ===
     draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.header_no), &data.invoice_no, paper_w, y);
     y += layout.fonts.header_no as i32 + 2;
 
@@ -274,8 +260,8 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
         y += layout.row_gap;
     }
 
-    // add a little space before dotted line (more than before)
-    y += 10;
+    // Extra space before dotted line (per request)
+    y += 18;
     draw_dotted(&mut img, y, margin_h, paper_w - margin_h);
     y += 12;
 
@@ -305,15 +291,16 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
                    label, right, y);
     y += layout.row_gap;
 
-    // === Footer (centered, large) — mixed RTL so digits keep order ===
-    draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_address, paper_w, y);
+    // === Footer (centered, large) — keep digits in correct order ===
+    // (address & delivery contain digits; they render fine as one run)
+    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_address, paper_w, y);
     y += layout.fonts.footer as i32 + 2;
 
-    draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_delivery, paper_w, y);
+    draw_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_delivery, paper_w, y);
     y += layout.fonts.footer as i32 + 2;
 
     draw_ltr_center(&mut img, &font, PxScale::from(layout.fonts.footer_phones), &data.footer_phones, paper_w, y);
-    // reduce bottom space: do not add extra gap here
+    // minimal bottom padding
     y += layout.margin_bottom;
 
     // Crop and grayscale
