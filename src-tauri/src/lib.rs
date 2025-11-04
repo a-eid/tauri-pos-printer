@@ -1,10 +1,10 @@
 use escpos::{driver::SerialPortDriver, printer::Printer, utils::*};
-use image::{ImageBuffer, Rgb, RgbImage, Luma, GrayImage};
+use image::{ImageBuffer, Rgb, RgbImage, GrayImage, Luma};
 use imageproc::drawing::draw_text_mut;
 use ab_glyph::{FontRef, PxScale};
 
 // ============================================================================
-// NCR 7197 Arabic bitmap probe: GS v 0 (m=0 & m='0') and ESC * 24-dot
+// NCR 7197 — final: print Arabic as bitmap via ESC * 24-dot (works on your unit)
 // ============================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
@@ -31,7 +31,7 @@ fn normalize_com_port(port: &str) -> String {
     #[cfg(not(windows))] { port.to_string() }
 }
 
-// ---- minimal RTL visual (reverse Arabic runs only) -------------------------
+// --- minimal RTL visual (reverse Arabic runs only) for image drawing ----------
 fn is_arabic(c: char) -> bool {
     (('\u{0600}'..='\u{06FF}').contains(&c))
         || (('\u{0750}'..='\u{077F}').contains(&c))
@@ -57,7 +57,7 @@ fn rtl_visual(s: &str) -> String {
     out
 }
 
-// ---- render two lines to grayscale image -----------------------------------
+// ---- render two lines to grayscale image ------------------------------------
 fn render_lines(line1: &str, line2: &str) -> GrayImage {
     let mut img: RgbImage = ImageBuffer::from_pixel(PAPER_WIDTH_PX, 140, Rgb([255, 255, 255]));
     let font_data = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
@@ -80,25 +80,7 @@ fn render_lines(line1: &str, line2: &str) -> GrayImage {
     image::DynamicImage::ImageRgb8(img).to_luma8()
 }
 
-// ---- pack 1bpp rows (MSB first) for GS v 0 ---------------------------------
-fn pack_rows_msb(gray: &GrayImage) -> (Vec<u8>, u16, u16) {
-    let w = gray.width();
-    let h = gray.height();
-    let bytes_per_row = ((w + 7) / 8) as usize;
-    let mut out = vec![0u8; bytes_per_row * h as usize];
-    for y in 0..h {
-        for x in 0..w {
-            let Luma([pix]) = *gray.get_pixel(x, y);
-            if pix < 128 {
-                let idx = y as usize * bytes_per_row + (x as usize / 8);
-                out[idx] |= 1u8 << (7 - (x as u8 & 7));
-            }
-        }
-    }
-    (out, bytes_per_row as u16, h as u16)
-}
-
-// ---- pack vertical 24-dot bands for ESC * (m=33) ---------------------------
+// ---- pack vertical 24-dot bands for ESC * (m=33) ----------------------------
 fn pack_esc_star_24(gray: &GrayImage, y0: u32) -> Vec<u8> {
     let w = gray.width();
     let h = gray.height();
@@ -110,9 +92,7 @@ fn pack_esc_star_24(gray: &GrayImage, y0: u32) -> Vec<u8> {
                 let yy = y0 + (byte * 8 + bit) as u32;
                 if yy < h {
                     let Luma([pix]) = *gray.get_pixel(x, yy);
-                    if pix < 128 {
-                        b |= 1 << (7 - bit);
-                    }
+                    if pix < 128 { b |= 1 << (7 - bit); }
                 }
             }
             band.push(b);
@@ -135,41 +115,18 @@ async fn print_receipt() -> Result<String, String> {
 
     let gray = render_lines("متجر عينة", "اختبار الطباعة");
 
-    // --- Try GS v 0 (m = 0) --------------------------------------------------
-    let (rows, x_bytes, y) = pack_rows_msb(&gray);
-    let label1 = "GS v0 m=0 →";
-    p = p.justify(JustifyMode::CENTER).map_err(|e| e.to_string())?
-         .writeln(label1).map_err(|e| e.to_string())?;
-    p = p.custom(&[0x1D, 0x76, 0x30, 0x00,
-                   (x_bytes & 0xFF) as u8, ((x_bytes >> 8) & 0xFF) as u8,
-                   (y & 0xFF) as u8, ((y >> 8) & 0xFF) as u8]).map_err(|e| e.to_string())?;
-    p = p.custom(&rows).map_err(|e| e.to_string())?
-         .feed().map_err(|e| e.to_string())?;
-
-    // --- Try GS v 0 (m = '0'/0x30) ------------------------------------------
-    let label2 = "GS v0 m='0' →";
-    p = p.writeln(label2).map_err(|e| e.to_string())?;
-    p = p.custom(&[0x1D, 0x76, 0x30, 0x30,
-                   (x_bytes & 0xFF) as u8, ((x_bytes >> 8) & 0xFF) as u8,
-                   (y & 0xFF) as u8, ((y >> 8) & 0xFF) as u8]).map_err(|e| e.to_string())?;
-    p = p.custom(&rows).map_err(|e| e.to_string())?
-         .feed().map_err(|e| e.to_string())?;
-
-    // --- Try ESC * 24-dot (m=33) --------------------------------------------
-    let label3 = "ESC * 24-dot →";
-    p = p.writeln(label3).map_err(|e| e.to_string())?;
+    // ESC * 24-dot double density (m=33), stream image in 24-dot bands
     let w = gray.width();
     let n = w as u16; // number of columns
     let nL = (n & 0xFF) as u8;
     let nH = ((n >> 8) & 0xFF) as u8;
+
     let mut y0 = 0u32;
     while y0 < gray.height() {
         let band = pack_esc_star_24(&gray, y0);
-        // ESC * m nL nH [data]
         p = p.custom(&[0x1B, 0x2A, 33, nL, nH]).map_err(|e| e.to_string())?;
         p = p.custom(&band).map_err(|e| e.to_string())?;
-        // line feed to strobe the band
-        p = p.custom(&[0x0A]).map_err(|e| e.to_string())?;
+        p = p.custom(&[0x0A]).map_err(|e| e.to_string())?; // LF to strobe the line
         y0 += 24;
     }
 
@@ -177,7 +134,7 @@ async fn print_receipt() -> Result<String, String> {
     p = p.print_cut().map_err(|e| e.to_string())?;
     p.print().map_err(|e| e.to_string())?;
 
-    Ok("✅ Bitmap probe sent (GS v0 m=0, GS v0 m='0', ESC * 24-dot)".into())
+    Ok(format!("✅ Arabic bitmap (ESC * 24-dot) printed on {}", port))
 }
 
 // ============================================================================
