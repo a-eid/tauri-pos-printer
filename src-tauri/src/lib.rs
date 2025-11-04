@@ -4,12 +4,13 @@ use imageproc::drawing::draw_text_mut;
 use ab_glyph::{FontRef, PxScale};
 
 // ============================================================================
-// NCR 7197 — final: print Arabic as bitmap via ESC * 24-dot (works on your unit)
+// NCR 7197 — Arabic as bitmap via ESC * 24-dot (bigger + bolder)
 // ============================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
 const DEFAULT_BAUD_RATE: u32 = 9600;
-const PAPER_WIDTH_PX: u32 = 576;
+const PAPER_WIDTH_PX: u32 = 576;   // 80mm head common width
+const THRESHOLD: u8 = 200;         // higher = darker print
 
 fn get_com_port() -> String {
     std::env::var("PRINTER_COM_PORT").unwrap_or_else(|_| DEFAULT_COM_PORT.to_string())
@@ -57,30 +58,47 @@ fn rtl_visual(s: &str) -> String {
     out
 }
 
-// ---- render two lines to grayscale image ------------------------------------
+// ---- helper: draw bold text by overpainting offsets -------------------------
+fn draw_bold_text(img: &mut RgbImage, text: &str, x: i32, y: i32, scale: PxScale, font: &FontRef) {
+    let black = Rgb([0u8, 0u8, 0u8]);
+    // Overpaint 4 offsets to make strokes thicker/darker
+    for (dx, dy) in [(0,0), (1,0), (0,1), (1,1)] {
+        draw_text_mut(img, black, x + dx, y + dy, scale, font, text);
+    }
+}
+
+// ---- render two big bold lines to grayscale image ---------------------------
 fn render_lines(line1: &str, line2: &str) -> GrayImage {
-    let mut img: RgbImage = ImageBuffer::from_pixel(PAPER_WIDTH_PX, 140, Rgb([255, 255, 255]));
+    // Taller canvas for large type
+    let mut img: RgbImage = ImageBuffer::from_pixel(PAPER_WIDTH_PX, 220, Rgb([255, 255, 255]));
     let font_data = include_bytes!("../fonts/NotoSansArabic-Regular.ttf");
     let font = FontRef::try_from_slice(font_data).expect("load font");
-    let black = Rgb([0u8, 0u8, 0u8]);
 
     let l1 = rtl_visual(line1);
     let l2 = rtl_visual(line2);
 
-    let s1 = PxScale::from(34.0);
-    let s2 = PxScale::from(26.0);
+    // Bigger sizes
+    let s1 = PxScale::from(64.0);
+    let s2 = PxScale::from(48.0);
+
+    // Rough centering (good enough for short lines)
     let w1 = l1.chars().count() as i32 * (s1.x as i32) / 2;
     let w2 = l2.chars().count() as i32 * (s2.x as i32) / 2;
     let x1 = (PAPER_WIDTH_PX as i32 / 2 - w1 / 2).max(0);
     let x2 = (PAPER_WIDTH_PX as i32 / 2 - w2 / 2).max(0);
 
-    draw_text_mut(&mut img, black, x1, 32, s1, &font, &l1);
-    draw_text_mut(&mut img, black, x2, 86, s2, &font, &l2);
+    // Vertical positions
+    let y1 = 50;
+    let y2 = 130;
 
+    draw_bold_text(&mut img, &l1, x1, y1, s1, &font);
+    draw_bold_text(&mut img, &l2, x2, y2, s2, &font);
+
+    // Convert to grayscale
     image::DynamicImage::ImageRgb8(img).to_luma8()
 }
 
-// ---- pack vertical 24-dot bands for ESC * (m=33) ----------------------------
+// ---- pack vertical 24-dot bands for ESC * (m=33) with darker threshold ------
 fn pack_esc_star_24(gray: &GrayImage, y0: u32) -> Vec<u8> {
     let w = gray.width();
     let h = gray.height();
@@ -92,7 +110,7 @@ fn pack_esc_star_24(gray: &GrayImage, y0: u32) -> Vec<u8> {
                 let yy = y0 + (byte * 8 + bit) as u32;
                 if yy < h {
                     let Luma([pix]) = *gray.get_pixel(x, yy);
-                    if pix < 128 { b |= 1 << (7 - bit); }
+                    if pix <= THRESHOLD { b |= 1 << (7 - bit); }
                 }
             }
             band.push(b);
@@ -108,16 +126,17 @@ async fn print_receipt() -> Result<String, String> {
     let driver = SerialPortDriver::open(&port, baud, None)
         .map_err(|e| format!("open {} @{}: {}", port, baud, e))?;
 
-    // hold object to avoid temporary-drop errors
+    // Hold Printer object (avoid temporary-drop errors)
     let mut obj = Printer::new(driver, Protocol::default(), None);
     obj.debug_mode(None);
     let mut p = obj.init().map_err(|e| e.to_string())?;
 
+    // Render big bold lines
     let gray = render_lines("متجر عينة", "اختبار الطباعة");
 
-    // ESC * 24-dot double density (m=33), stream image in 24-dot bands
+    // Stream as ESC * 24-dot double density (m=33)
     let w = gray.width();
-    let n = w as u16; // number of columns
+    let n = w as u16; // columns
     let nL = (n & 0xFF) as u8;
     let nH = ((n >> 8) & 0xFF) as u8;
 
@@ -126,7 +145,7 @@ async fn print_receipt() -> Result<String, String> {
         let band = pack_esc_star_24(&gray, y0);
         p = p.custom(&[0x1B, 0x2A, 33, nL, nH]).map_err(|e| e.to_string())?;
         p = p.custom(&band).map_err(|e| e.to_string())?;
-        p = p.custom(&[0x0A]).map_err(|e| e.to_string())?; // LF to strobe the line
+        p = p.custom(&[0x0A]).map_err(|e| e.to_string())?; // LF to strobe line
         y0 += 24;
     }
 
@@ -134,7 +153,7 @@ async fn print_receipt() -> Result<String, String> {
     p = p.print_cut().map_err(|e| e.to_string())?;
     p.print().map_err(|e| e.to_string())?;
 
-    Ok(format!("✅ Arabic bitmap (ESC * 24-dot) printed on {}", port))
+    Ok(format!("✅ Arabic bitmap (big+bold) printed on {}", port))
 }
 
 // ============================================================================
