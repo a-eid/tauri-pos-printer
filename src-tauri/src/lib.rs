@@ -7,12 +7,7 @@ use serde::Deserialize;
 
 // ================================================================
 // Arabic receipt (bitmap via ESC * 24-dot) — RTL, crisp (NCR 7197)
-// Fixes in this drop:
-// - Correct rendering when Arabic text contains digits (e.g., "٤:٠٩", "٢٤")
-//   by treating Arabic-Indic (U+0660..U+0669) & Eastern (U+06F0..U+06F9)
-//   digits as LTR runs inside RTL lines.
-// - Apply mixed-RTL drawing for: title/date/footer and product names.
-// - Added the 3 requested products with numbers in names.
+// Fix: correct RTL with numbers by preserving logical run order.
 // ================================================================
 
 const DEFAULT_COM_PORT: &str = "COM7";
@@ -46,7 +41,7 @@ impl Item { fn value(&self) -> f32 { self.qty * self.price } }
 
 #[derive(Clone, Deserialize)]
 struct ReceiptData {
-    store_name: String,       // supports "\n" for manual 2-line title
+    store_name: String,       // supports "\n" for 2-line title
     date_time_line: String,   // e.g. "٤ نوفمبر - ٤:٠٩ صباحا"
     invoice_no: String,       // "123456"
     items: Vec<Item>,
@@ -60,10 +55,10 @@ struct ReceiptData {
 struct Layout {
     paper_width_px: u32,
     threshold: u8,
-    margin_h: i32,      // horizontal margin (tiny)
-    margin_top: i32,    // reduced top space
-    margin_bottom: i32, // reduced bottom space
-    row_gap: i32,       // item vertical gap (tight)
+    margin_h: i32,
+    margin_top: i32,
+    margin_bottom: i32,
+    row_gap: i32,
     fonts: Fonts,
     // RTL columns as percentages of inner width: [name, qty, price, total]
     cols: [f32; 4],
@@ -113,20 +108,21 @@ fn draw_crisp(img: &mut RgbImage, s: &str, x: i32, y: i32, scale: PxScale, font:
     draw_text_mut(img, Rgb([0,0,0]), x, y, scale, font, s);
 }
 
-// Characters that should be drawn LTR even inside Arabic text:
-// ASCII + Arabic-Indic digits + Eastern Arabic digits + common separators.
+// Characters that should be treated as LTR runs
 fn is_ltr_char(c: char) -> bool {
     c.is_ascii()
         || ('\u{0660}'..='\u{0669}').contains(&c) // Arabic-Indic ٠..٩
         || ('\u{06F0}'..='\u{06F9}').contains(&c) // Eastern ۰..۹
+        || ":./-–—,".contains(c)
 }
 
-// Mixed RTL line aligned to the RIGHT edge.
-// Splits shaped text into LTR/RTL runs. RTL runs are composed char-by-char;
-// LTR runs are drawn as normal text (keeps number order like "٤:٠٩", "٢٤").
+// Mixed RTL line aligned RIGHT.
+// IMPORTANT CHANGE: we no longer reverse the order of runs.
+// We keep logical order and position each run from right to left,
+// which keeps Arabic text with embedded numbers in the right order.
 fn draw_mixed_rtl_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &str, x_right: i32, y: i32) {
     let shaped = shape(logical);
-    let mut runs: Vec<(bool /*ltr*/, String, i32 /*width*/)> = Vec::new();
+    let mut runs: Vec<(bool /*ltr*/, String, i32 /*w*/)> = Vec::new();
     let mut cur = String::new();
     let mut cur_is_ltr = None::<bool>;
 
@@ -136,7 +132,6 @@ fn draw_mixed_rtl_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, logi
             None => { cur_is_ltr = Some(ltr); cur.push(ch); }
             Some(kind) if kind == ltr => cur.push(ch),
             Some(_) => {
-                // close previous run
                 let w = if cur_is_ltr.unwrap() {
                     text_size(scale, font, &cur).0 as i32
                 } else {
@@ -158,32 +153,39 @@ fn draw_mixed_rtl_right(img: &mut RgbImage, font: &FontRef, scale: PxScale, logi
         runs.push((cur_is_ltr.unwrap(), cur.clone(), w));
     }
 
-    // Start from the right edge and paint runs in logical RTL order.
+    // total width of the visual line
+    let total_w: i32 = runs.iter().map(|r| r.2).sum();
     let mut right = x_right;
-    for (is_ltr, seg, w) in runs.into_iter().rev() {
+
+    // Iterate in LOGICAL order; place each run from right to left.
+    for (is_ltr, seg, w) in runs.into_iter() {
+        let start_x = right - w;
         if is_ltr {
+            // normal LTR segment
             draw_ltr_right(img, font, scale, &seg, right, y);
         } else {
+            // RTL segment: draw chars right-to-left within this run
             let chars: Vec<char> = seg.chars().collect();
             let mut cw: Vec<i32> = Vec::with_capacity(chars.len());
-            for &c in &chars { let (tw, _) = text_size(scale, font, &c.to_string()); cw.push(tw as i32); }
-            let mut x = right - cw.iter().sum::<i32>();
+            for &c in &chars { cw.push(text_size(scale, font, &c.to_string()).0 as i32); }
+            let mut x = start_x;
             for i in (0..chars.len()).rev() {
                 draw_crisp(img, &chars[i].to_string(), x, y, scale, font);
                 x += cw[i];
             }
         }
         right -= w;
+        // guard: in case widths miscalc, don't overflow available right bound
+        if right < x_right - total_w { break; }
     }
 }
 
-// Mixed RTL centered (used for date/footer lines).
+// Mixed RTL centered
 fn draw_mixed_rtl_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, logical: &str, paper_w: i32, y: i32) {
     let shaped = shape(logical);
     let mut runs: Vec<(bool, String, i32)> = Vec::new();
     let mut cur = String::new();
     let mut cur_is_ltr = None::<bool>;
-
     for ch in shaped.chars() {
         let ltr = is_ltr_char(ch);
         match cur_is_ltr {
@@ -210,18 +212,19 @@ fn draw_mixed_rtl_center(img: &mut RgbImage, font: &FontRef, scale: PxScale, log
         };
         runs.push((cur_is_ltr.unwrap(), cur.clone(), w));
     }
-
     let total_w: i32 = runs.iter().map(|r| r.2).sum();
-    let mut right = (paper_w + total_w) / 2; // anchor to visual center
+    let mut right = (paper_w + total_w) / 2;
 
-    for (is_ltr, seg, w) in runs.into_iter().rev() {
+    // LOGICAL order
+    for (is_ltr, seg, w) in runs.into_iter() {
+        let start_x = right - w;
         if is_ltr {
             draw_ltr_right(img, font, scale, &seg, right, y);
         } else {
             let chars: Vec<char> = seg.chars().collect();
             let mut cw: Vec<i32> = Vec::with_capacity(chars.len());
-            for &c in &chars { let (tw, _) = text_size(scale, font, &c.to_string()); cw.push(tw as i32); }
-            let mut x = right - cw.iter().sum::<i32>();
+            for &c in &chars { cw.push(text_size(scale, font, &c.to_string()).0 as i32); }
+            let mut x = start_x;
             for i in (0..chars.len()).rev() {
                 draw_crisp(img, &chars[i].to_string(), x, y, scale, font);
                 x += cw[i];
@@ -260,7 +263,7 @@ fn draw_dotted(img: &mut RgbImage, y: i32, left: i32, right: i32) {
 
 fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     let paper_w = layout.paper_width_px as i32;
-    let mut img: RgbImage = ImageBuffer::from_pixel(layout.paper_width_px, 1700, Rgb([255,255,255]));
+    let mut img: RgbImage = ImageBuffer::from_pixel(layout.paper_width_px, 1800, Rgb([255,255,255]));
     let margin_h = layout.margin_h;
     let inner_w = paper_w - margin_h*2;
     let right_edge = margin_h + inner_w;
@@ -271,9 +274,9 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
 
     // === Title ===
     draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.title), &data.store_name, paper_w, y);
-    y += layout.fonts.title as i32 - 8; // keep it tight
+    y += layout.fonts.title as i32 - 8;
 
-    // === Date/Time (mixed RTL centered -> keeps "٤:٠٩" and "٢٤") ===
+    // === Date/Time (mixed RTL centered)
     draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.header_dt), &data.date_time_line, paper_w, y);
     y += layout.fonts.header_dt as i32 + 2;
 
@@ -328,7 +331,7 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
         y += layout.row_gap - 6;
     }
 
-    // === Total (tight on right) ===
+    // === Total ===
     let gap = 12;
     let label = "إجمالي الفاتورة";
     let (lw, _) = text_size(PxScale::from(layout.fonts.total_label), &font, &shape(label));
@@ -341,7 +344,7 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
                          label, right, y);
     y += layout.row_gap;
 
-    // === Footer (use mixed so numbers like "٢٤" keep order) ===
+    // === Footer (mixed so numbers like "٢٤" stay correct) ===
     draw_mixed_rtl_center(&mut img, &font, PxScale::from(layout.fonts.footer), &data.footer_address,  paper_w, y);
     y += layout.fonts.footer as i32 + 2;
 
@@ -352,7 +355,7 @@ fn render_receipt(data: &ReceiptData, layout: &Layout) -> GrayImage {
     y += layout.margin_bottom;
 
     // Crop and grayscale
-    let used_h = (y as u32).min(1698);
+    let used_h = (y as u32).min(1798);
     image::DynamicImage::ImageRgb8(img)
         .crop_imm(0, 0, layout.paper_width_px, used_h)
         .to_luma8()
@@ -388,18 +391,17 @@ async fn print_receipt() -> Result<String, String> { print_receipt_sample().awai
 async fn print_receipt_sample() -> Result<String, String> {
     let data = ReceiptData {
         store_name: "اسواق ابو عمر".into(),
-        // Arabic-Indic digits; mixed RTL renderer keeps "٤:٠٩" in correct order.
         date_time_line: "٤ نوفمبر - ٤:٠٩ صباحا".into(),
         invoice_no: "123456".into(),
         items: vec![
-            Item { name: "تفاح عرض".into(),            qty: 0.96, price: 70.00 },
+            Item { name: "عرض تفاح".into(),            qty: 0.96, price: 70.00 },
             Item { name: "تفاح".into(),                qty: 1.95, price: 30.00 },
             Item { name: "خيار".into(),                qty: 1.02, price: 25.00 },
             Item { name: "ليمون بلدي".into(),          qty: 0.44, price: 30.00 },
             Item { name: "بطاطا".into(),               qty: 2.16, price: 20.00 },
             Item { name: "ربطة جرجير".into(),          qty: 4.00, price: 3.00  },
             Item { name: "نعناع فريش".into(),          qty: 1.00, price: 5.00  },
-            // New items with digits in the Arabic names:
+            // Items with digits in Arabic names
             Item { name: "جبنه رومي وزن ٢٥٠جم".into(),     qty: 0.25, price: 220.00 },
             Item { name: "جبنه تلاجه عين وزن ٢٥٠جم".into(), qty: 0.25, price: 180.00 },
             Item { name: "لبن وزن ٣.٢٥كج".into(),           qty: 3.25, price: 28.00  },
@@ -450,7 +452,7 @@ async fn do_print(data: &ReceiptData, layout: &Layout) -> Result<String, String>
         y0 += 24;
     }
 
-    // minimal feed then cut
+    // feed & cut
     p = p.custom(&[0x0A]).map_err(|e| e.to_string())?;
     p = p.print_cut().map_err(|e| e.to_string())?;
     p.print().map_err(|e| e.to_string())?;
